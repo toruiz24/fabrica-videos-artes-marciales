@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1920px;
+    height: 1080px;
+    background-color: #090d16;
+    background-image: 
+      linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px);
+    background-size: 60px 60px;
+    color: #f8fafc;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 55px 80px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 2px solid #1e293b;
+    padding-bottom: 22px;
+    margin-bottom: 35px;
+  }
+  .badge {
+    background: linear-gradient(135deg, #d97706, #f59e0b);
+    color: #090d16;
+    padding: 10px 24px;
+    border-radius: 6px;
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+  h1 { font-size: 46px; font-weight: 800; color: #f8fafc; }
+  #stage {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 30px;
+    line-height: 1.5;
+    width: 100%;
+  }
+  .anim-step {
+    opacity: 0;
+    transform: translateY(20px) scale(0.98);
+    transition: opacity 0.55s cubic-bezier(0.16, 1, 0.3, 1), transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .anim-step.visible { opacity: 1; transform: translateY(0) scale(1); }
+  .principle-box {
+    background: rgba(245, 158, 11, 0.1);
+    border-left: 6px solid #f59e0b;
+    padding: 24px 32px;
+    border-radius: 0 12px 12px 0;
+    margin: 16px 0;
+  }
+  .sequence-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+    gap: 28px;
+    width: 100%;
+  }
+  .sequence-card {
+    background: rgba(15, 23, 42, 0.9);
+    border: 2px solid #1e293b;
+    border-top: 4px solid #38bdf8;
+    border-radius: 14px;
+    padding: 32px;
+    box-shadow: 0 20px 30px -10px rgba(0, 0, 0, 0.6);
+  }
+  .svg-draw {
+    stroke-dasharray: 1200;
+    stroke-dashoffset: 1200;
+    transition: stroke-dashoffset 1.4s ease-in-out;
+  }
+  .svg-draw.visible { stroke-dashoffset: 0; }
+  #progress-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    height: 8px;
+    background: linear-gradient(90deg, #f59e0b, #ef4444);
+    width: 0%;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1 id="scene-title">Título Técnico</h1>
+    <span class="badge" id="module-badge">Módulo</span>
+  </header>
+  <main id="stage"></main>
+  <div id="progress-bar"></div>
+  <script>
+    window.loadScene = function(moduleTitle, headline, htmlBody) {
+      document.getElementById('module-badge').innerText = moduleTitle;
+      document.getElementById('scene-title').innerText = headline;
+      document.getElementById('stage').innerHTML = htmlBody;
+      document.getElementById('progress-bar').style.width = '0%';
+    };
+    window.setProgress = function(ratio) {
+      document.getElementById('progress-bar').style.width = (ratio * 100) + '%';
+      if (ratio >= 0.05) document.querySelectorAll('.step-1, .svg-draw').forEach(el => el.classList.add('visible'));
+      if (ratio >= 0.30) document.querySelectorAll('.step-2').forEach(el => el.classList.add('visible'));
+      if (ratio >= 0.55) document.querySelectorAll('.step-3').forEach(el => el.classList.add('visible'));
+      if (ratio >= 0.78) document.querySelectorAll('.step-4').forEach(el => el.classList.add('visible'));
+    };
+  </script>
+</body>
+</html>
