@@ -1,4 +1,4 @@
-name: Fabrica Autonoma de Videos Educativos
+name: Fabrica Documental de Videos
 
 on:
   workflow_dispatch:
@@ -6,68 +6,63 @@ on:
     paths:
       - 'input/*.pdf'
 
-permissions:
-  contents: read
-  models: read
-
 jobs:
-  generar-videos:
+  generar-documentales:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
 
     steps:
       - name: 1. Clonar repositorio
         uses: actions/checkout@v4
 
-      - name: 2. Restaurar progreso guardado (si existe)
+      - name: 2. Restaurar progreso guardado V2
         uses: actions/cache/restore@v4
         with:
           path: build
-          key: fabrica-progreso-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: fabrica-doc-v2-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            fabrica-progreso-${{ hashFiles('input/*.pdf') }}-
+            fabrica-doc-v2-${{ hashFiles('input/*.pdf') }}-
 
       - name: 3. Configurar Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 4. Instalar FFmpeg y dependencias
+      - name: 4. Instalar FFmpeg y librerias
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
           pip install -r requirements.txt
-          playwright install chromium
-          playwright install-deps chromium
 
-      - name: 5. Extraer capitulos del PDF
+      - name: 5. Dividir libro por capitulos reales
         run: python src/1_extract_chapters.py
 
-      - name: 6. Generar guiones visuales (Multi-IA)
+      - name: 6. Generar guiones documentales
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python src/2_generate_script.py
 
-      - name: 7. Renderizar animaciones y locuciones
+      - name: 7. Producir escenas con video real, IA y subtitulos
+        env:
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python src/3_render_scenes.py
 
-      - name: 8. Compilar videos MP4 finales
+      - name: 8. Compilar documentales MP4 finales
         run: python src/4_compile_video.py
 
-      - name: 9. Guardar progreso en cache (incluso si hubo error)
+      - name: 9. Guardar progreso en cache
         if: always()
         uses: actions/cache/save@v4
         with:
           path: build
-          key: fabrica-progreso-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: fabrica-doc-v2-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: 10. Publicar videos terminados para descarga
+      - name: 10. Publicar documentales para descarga
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: videos-artes-marciales-mp4
+          name: documentales-artes-marciales-mp4
           path: output/*.mp4
           if-no-files-found: ignore
           retention-days: 14
