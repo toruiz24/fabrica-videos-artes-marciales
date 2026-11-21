@@ -4,20 +4,8 @@ import glob
 import time
 from google import genai
 from google.genai import types
+from openai import OpenAI
 from pydantic import BaseModel, Field
-
-# Soporta tu clave principal y, si algún día agregás una segunda, la usa de respaldo
-API_KEYS = [k for k in [os.environ.get("GEMINI_API_KEY"), os.environ.get("GEMINI_API_KEY_2")] if k]
-
-# Cada modelo tiene su propia cuota diaria gratuita independiente
-MODELS_FALLBACK = [
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-]
 
 class Scene(BaseModel):
     scene_number: int
@@ -57,36 +45,123 @@ REGLAS PEDAGÓGICAS Y VISUALES:
    - class="anim-step step-3" (Ejecución / Transferencia de peso - aparece al 55%)
    - class="anim-step step-4" (Resolución / Clave biomecánica - aparece al 78%)
    - En líneas y flechas SVG (<path>, <line>, <circle>), usá class="svg-draw" para que se tracen solas en pantalla.
+
+FORMATO DE SALIDA OBLIGATORIO (JSON PURO):
+Devolvé ÚNICAMENTE un objeto JSON válido (sin bloques de markdown ```json) con exactamente esta estructura:
+{
+  "module_title": "Título del módulo",
+  "scenes": [
+    {
+      "scene_number": 1,
+      "narration": "...",
+      "visual_type": "biomechanics_diagram",
+      "headline": "...",
+      "html_animation_body": "..."
+    }
+  ]
+}
 """
 
-def call_gemini_smart(prompt):
-    last_error = None
-    for key_idx, api_key in enumerate(API_KEYS, start=1):
-        client = genai.Client(api_key=api_key)
-        for model_name in MODELS_FALLBACK:
-            for attempt in range(1, 3):
-                try:
-                    print(f"  -> Probando {model_name} (Key #{key_idx}, intento {attempt})...")
-                    return client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
-                            response_mime_type="application/json",
-                            response_schema=VideoScript,
-                            temperature=0.4,
-                        ),
-                    )
-                except Exception as e:
-                    last_error = e
-                    err_str = str(e)
-                    # Si agotó cuota diaria (429) o no existe el modelo (404), salta directo al siguiente modelo sin gastar intentos
-                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "404" in err_str:
-                        print(f"  [Cambio de modelo] {model_name} sin cuota disponible. Saltando al siguiente...")
-                        break
-                    print(f"  [Aviso] {model_name} ocupado ({err_str[:80]}...). Esperando 10s...")
-                    time.sleep(10)
-    raise RuntimeError(f"Todos los modelos agotaron su cuota temporalmente. Último error: {last_error}")
+def clean_json_text(text):
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+def try_gemini(prompt):
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return None
+    client = genai.Client(api_key=api_key)
+    for model_name in ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite"]:
+        try:
+            print(f"  -> [Google Gemini] Probando {model_name}...")
+            res = client.models.generate_content(
+                model=model_name,
+                contents=prompt[:28000],
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=VideoScript,
+                    temperature=0.4,
+                ),
+            )
+            VideoScript.model_validate_json(res.text)
+            return res.text
+        except Exception as e:
+            print(f"  [Salto Gemini] {model_name} no disponible: {str(e)[:90]}...")
+    return None
+
+def try_openai_compatible(provider_name, base_url, api_key, models, prompt, max_chars=24000):
+    if not api_key:
+        return None
+    client = OpenAI(base_url=base_url, api_key=api_key)
+    for model_name in models:
+        for attempt in range(1, 3):
+            try:
+                print(f"  -> [{provider_name}] Probando {model_name} (intento {attempt})...")
+                res = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt[:max_chars]},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.4,
+                    max_tokens=8000,
+                )
+                raw_json = clean_json_text(res.choices[0].message.content)
+                validated = VideoScript.model_validate_json(raw_json)
+                return validated.model_dump_json(indent=2)
+            except Exception as e:
+                err = str(e)
+                print(f"  [Salto {provider_name}] {model_name}: {err[:100]}...")
+                if "429" in err or "401" in err or "403" in err or "404" in err or "413" in err:
+                    break
+                time.sleep(8)
+    return None
+
+def generate_with_any_ai(prompt):
+    # 1. Intentar OpenRouter primero
+    result = try_openai_compatible(
+        provider_name="OpenRouter",
+        base_url="https://openrouter.ai",
+        api_key=os.environ.get("OPENROUTER_API_KEY"),
+        models=[
+            "openrouter/free",
+            "nvidia/nemotron-3.5-lightning:free",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "google/gemma-4-31b-it:free",
+        ],
+        prompt=prompt,
+        max_chars=24000,
+    )
+    if result:
+        return result
+
+    # 2. Intentar Google Gemini
+    result = try_gemini(prompt)
+    if result:
+        return result
+
+    # 3. Intentar GitHub Models (integrado gratis en Actions)
+    result = try_openai_compatible(
+        provider_name="GitHub Models",
+        base_url="https://github.ai",
+        api_key=os.environ.get("GITHUB_TOKEN"),
+        models=["openai/gpt-4o-mini", "meta/Llama-3.3-70B-Instruct", "deepseek/DeepSeek-V3"],
+        prompt=prompt,
+        max_chars=14000,
+    )
+    if result:
+        return result
+
+    raise RuntimeError("Ningún proveedor de IA pudo generar el guion. Revisá tus claves o límites diarios.")
 
 def generate_scripts():
     os.makedirs("build/scripts", exist_ok=True)
@@ -102,15 +177,15 @@ def generate_scripts():
             continue
 
         print(f"Generando análisis visual marcial para: {chapter['title']}...")
-        prompt = f"Título del Módulo: {chapter['title']}\n\nContenido técnico a transformar en demostración visual:\n{chapter['content'][:28000]}"
+        prompt = f"Título del Módulo: {chapter['title']}\n\nContenido técnico a transformar en demostración visual:\n{chapter['content']}"
 
-        response = call_gemini_smart(prompt)
+        json_text = generate_with_any_ai(prompt)
 
         with open(out_path, "w", encoding="utf-8") as f:
-            f.write(response.text)
+            f.write(json_text)
 
         print(f"  -> Guion guardado: {out_path}")
-        time.sleep(8)
+        time.sleep(6)
 
 if __name__ == "__main__":
     generate_scripts()
