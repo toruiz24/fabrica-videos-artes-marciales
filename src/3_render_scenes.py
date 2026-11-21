@@ -12,10 +12,9 @@ PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 PIXABAY_VID_CACHE = "build/pixabay_videos"
 PIXABAY_IMG_CACHE = "build/pixabay_photos"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Accept": "*/*"
-}
+API_HEADERS = {"Accept": "application/json"}
+CDN_HEADERS = {"Referer": "https://pixabay.com"}
+WIKI_HEADERS = {"User-Agent": "FabricaDocumentalBot/1.0 (https://github.com)"}
 
 def get_audio_duration(mp3_path):
     cmd = [
@@ -41,43 +40,80 @@ def generate_tts_and_subs(text, out_mp3, out_srt, max_retries=5):
                 raise
             time.sleep(4 * attempt)
 
-def fetch_pixabay_video(query, scene_seed):
-    if not PIXABAY_KEY:
-        raise RuntimeError("Falta PIXABAY_API_KEY en los secretos de GitHub.")
+def fetch_wikimedia_video(query, scene_seed):
     os.makedirs(PIXABAY_VID_CACHE, exist_ok=True)
-    for search_q in [query, "martial arts", "boxing", "kickboxing", "training", "city night"]:
-        q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
+    for search_q in [query, "martial arts", "boxing", "karate", "self defense"]:
+        q_hash = "wiki_" + hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
         cached = sorted(glob.glob(f"{PIXABAY_VID_CACHE}/{q_hash}_*.mp4"))
         if cached:
             return cached[scene_seed % len(cached)]
         try:
-            url = f"https://pixabay.com{PIXABAY_KEY}&q={urllib.parse.quote(search_q)}&per_page=6"
-            resp = requests.get(url, headers=HEADERS, timeout=20)
-            if resp.status_code != 200:
-                continue
+            url = (
+                "https://wikimedia.org"
+                f"&gsrsearch=filetype:video+{urllib.parse.quote(search_q)}&gsrnamespace=6"
+                "&gsrlimit=6&prop=videoinfo&viprop=url&format=json"
+            )
+            resp = requests.get(url, headers=WIKI_HEADERS, timeout=20)
+            pages = resp.json().get("query", {}).get("pages", {})
             downloaded = []
-            for idx, hit in enumerate(resp.json().get("hits", [])[:4]):
-                vids = hit.get("videos", {})
-                info = vids.get("medium") or vids.get("large") or vids.get("small")
-                if info and info.get("url"):
-                    local_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.mp4"
-                    r = requests.get(info["url"], headers=HEADERS, timeout=40)
+            for idx, page in enumerate(list(pages.values())[:4]):
+                vinfo_list = page.get("videoinfo", [])
+                vurl = vinfo_list[0].get("url", "") if vinfo_list else ""
+                if vurl.lower().endswith((".webm", ".mp4", ".ogv")):
+                    raw_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.raw"
+                    mp4_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.mp4"
+                    r = requests.get(vurl, headers=WIKI_HEADERS, timeout=45)
                     if r.status_code == 200 and len(r.content) > 100000:
-                        with open(local_path, "wb") as f:
+                        with open(raw_path, "wb") as f:
                             f.write(r.content)
-                        downloaded.append(local_path)
+                        subprocess.run([
+                            "ffmpeg", "-y", "-i", raw_path, "-t", "25",
+                            "-c:v", "libx264", "-preset", "ultrafast", "-an", mp4_path
+                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 50000:
+                            downloaded.append(mp4_path)
             if downloaded:
-                print(f"  [Pixabay Video OK] {len(downloaded)} clips reales para '{search_q}'")
+                print(f"  [Wikimedia Video OK] {len(downloaded)} clips reales para '{search_q}'")
                 return downloaded[scene_seed % len(downloaded)]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [Aviso Wikimedia] '{search_q}': {e}")
     return None
-def fetch_pixabay_photo_fallback(query, out_img, scene_seed):
-    if not PIXABAY_KEY:
-        return False
+
+def fetch_pixabay_video(query, scene_seed):
+    os.makedirs(PIXABAY_VID_CACHE, exist_ok=True)
+    if PIXABAY_KEY:
+        for search_q in [query, "martial arts", "boxing", "kickboxing", "training", "city night"]:
+            q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
+            cached = sorted(glob.glob(f"{PIXABAY_VID_CACHE}/{q_hash}_*.mp4"))
+            if cached:
+                return cached[scene_seed % len(cached)]
+            try:
+                url = f"https://pixabay.comapi/videos/?key={PIXABAY_KEY}&q={urllib.parse.quote(search_q)}&per_page=6"
+                resp = requests.get(url, headers=API_HEADERS, timeout=20)
+                if resp.status_code != 200:
+                    print(f"  [Aviso Pixabay] HTTP {resp.status_code}: {resp.text[:80]}")
+                    break
+                downloaded = []
+                for idx, hit in enumerate(resp.json().get("hits", [])[:4]):
+                    vids = hit.get("videos", {})
+                    info = vids.get("medium") or vids.get("large") or vids.get("small")
+                    if info and info.get("url"):
+                        local_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.mp4"
+                        r = requests.get(info["url"], headers=CDN_HEADERS, timeout=40)
+                        if r.status_code == 200 and len(r.content) > 100000:
+                            with open(local_path, "wb") as f:
+                                f.write(r.content)
+                            downloaded.append(local_path)
+                if downloaded:
+                    print(f"  [Pixabay Video OK] {len(downloaded)} clips reales para '{search_q}'")
+                    return downloaded[scene_seed % len(downloaded)]
+            except Exception as e:
+                print(f"  [Aviso Pixabay] Error con '{search_q}': {e}")
+    return fetch_wikimedia_video(query, scene_seed)
+def fetch_wikimedia_photo(query, out_img, scene_seed):
     os.makedirs(PIXABAY_IMG_CACHE, exist_ok=True)
-    for search_q in [query, "martial arts", "boxing", "self defense", "street night"]:
-        q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
+    for search_q in [query, "martial arts", "boxing", "karate", "self defense"]:
+        q_hash = "wikiphoto_" + hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
         cached_imgs = sorted(glob.glob(f"{PIXABAY_IMG_CACHE}/{q_hash}_*.jpg"))
         if cached_imgs:
             chosen = cached_imgs[scene_seed % len(cached_imgs)]
@@ -85,16 +121,20 @@ def fetch_pixabay_photo_fallback(query, out_img, scene_seed):
                 dst.write(src.read())
             return True
         try:
-            url = f"https://pixabay.com{PIXABAY_KEY}&q={urllib.parse.quote(search_q)}&image_type=photo&orientation=horizontal&per_page=6"
-            resp = requests.get(url, headers=HEADERS, timeout=20)
-            if resp.status_code != 200:
-                continue
+            url = (
+                "https://wikimedia.org"
+                f"&gsrsearch=filetype:bitmap+{urllib.parse.quote(search_q)}&gsrnamespace=6"
+                "&gsrlimit=6&prop=imageinfo&iiprop=url&iiurlwidth=1280&format=json"
+            )
+            resp = requests.get(url, headers=WIKI_HEADERS, timeout=20)
+            pages = resp.json().get("query", {}).get("pages", {})
             downloaded = []
-            for idx, hit in enumerate(resp.json().get("hits", [])[:4]):
-                img_url = hit.get("largeImageURL") or hit.get("webformatURL")
-                if img_url:
+            for idx, page in enumerate(list(pages.values())[:4]):
+                iinfo = page.get("imageinfo", [{}])[0]
+                img_url = iinfo.get("thumburl") or iinfo.get("url", "")
+                if img_url.lower().endswith((".jpg", ".jpeg", ".png")):
                     local_path = f"{PIXABAY_IMG_CACHE}/{q_hash}_{idx}.jpg"
-                    r = requests.get(img_url, headers=HEADERS, timeout=30)
+                    r = requests.get(img_url, headers=WIKI_HEADERS, timeout=30)
                     if r.status_code == 200 and len(r.content) > 20000:
                         with open(local_path, "wb") as f:
                             f.write(r.content)
@@ -108,6 +148,41 @@ def fetch_pixabay_photo_fallback(query, out_img, scene_seed):
             pass
     return False
 
+def fetch_pixabay_photo_fallback(query, out_img, scene_seed):
+    os.makedirs(PIXABAY_IMG_CACHE, exist_ok=True)
+    if PIXABAY_KEY:
+        for search_q in [query, "martial arts", "boxing", "self defense", "street night"]:
+            q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
+            cached_imgs = sorted(glob.glob(f"{PIXABAY_IMG_CACHE}/{q_hash}_*.jpg"))
+            if cached_imgs:
+                chosen = cached_imgs[scene_seed % len(cached_imgs)]
+                with open(chosen, "rb") as src, open(out_img, "wb") as dst:
+                    dst.write(src.read())
+                return True
+            try:
+                url = f"https://pixabay.com{PIXABAY_KEY}&q={urllib.parse.quote(search_q)}&image_type=photo&orientation=horizontal&per_page=6"
+                resp = requests.get(url, headers=API_HEADERS, timeout=20)
+                if resp.status_code != 200:
+                    break
+                downloaded = []
+                for idx, hit in enumerate(resp.json().get("hits", [])[:4]):
+                    img_url = hit.get("largeImageURL") or hit.get("webformatURL")
+                    if img_url:
+                        local_path = f"{PIXABAY_IMG_CACHE}/{q_hash}_{idx}.jpg"
+                        r = requests.get(img_url, headers=CDN_HEADERS, timeout=30)
+                        if r.status_code == 200 and len(r.content) > 20000:
+                            with open(local_path, "wb") as f:
+                                f.write(r.content)
+                            downloaded.append(local_path)
+                if downloaded:
+                    chosen = downloaded[scene_seed % len(downloaded)]
+                    with open(chosen, "rb") as src, open(out_img, "wb") as dst:
+                        dst.write(src.read())
+                    return True
+            except Exception:
+                pass
+    return fetch_wikimedia_photo(query, out_img, scene_seed)
+
 def generate_ai_image(prompt, fallback_query, out_img, seed):
     if os.path.exists(out_img) and os.path.getsize(out_img) > 20000:
         return True
@@ -115,7 +190,7 @@ def generate_ai_image(prompt, fallback_query, out_img, seed):
     url = f"https://pollinations.ai{encoded}?width=1280&height=720&nologo=true&seed={seed}"
     for attempt in range(1, 3):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=45)
+            r = requests.get(url, headers=WIKI_HEADERS, timeout=45)
             if r.status_code == 200 and len(r.content) > 20000 and b"html" not in r.content[:200].lower():
                 with open(out_img, "wb") as f:
                     f.write(r.content)
@@ -159,7 +234,7 @@ def render_all():
             if need_pixabay:
                 broll_path = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
                 if not broll_path or not os.path.exists(broll_path):
-                    raise RuntimeError("No se pudo descargar ningún video de Pixabay.")
+                    raise RuntimeError("No se pudo descargar ningún video de Pixabay ni Wikimedia.")
                 vf = f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
                 subprocess.run([
                     "ffmpeg", "-y", "-stream_loop", "-1", "-i", broll_path, "-i", mp3_path,
