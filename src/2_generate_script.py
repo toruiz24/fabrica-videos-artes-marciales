@@ -48,6 +48,26 @@ REGLAS PEDAGÓGICAS Y VISUALES:
    - En líneas y flechas SVG (<path>, <line>, <circle>), usá class="svg-draw" para que se tracen solas en pantalla.
 """
 
+def call_gemini_with_retry(prompt, max_retries=6):
+    for attempt in range(1, max_retries + 1):
+        try:
+            return client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=VideoScript,
+                    temperature=0.4,
+                ),
+            )
+        except Exception as e:
+            if attempt == max_retries:
+                raise
+            wait_time = 15 * attempt
+            print(f"  [Aviso] Servidor ocupado ({e}). Reintentando en {wait_time}s (intento {attempt}/{max_retries})...")
+            time.sleep(wait_time)
+
 def generate_scripts():
     os.makedirs("build/scripts", exist_ok=True)
     chapter_files = sorted(glob.glob("build/chapters/*.json"))
@@ -63,21 +83,13 @@ def generate_scripts():
         print(f"Generando análisis visual marcial para: {chapter['title']}...")
         prompt = f"Título del Módulo: {chapter['title']}\n\nContenido técnico a transformar en demostración visual:\n{chapter['content'][:28000]}"
 
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=VideoScript,
-                temperature=0.4,
-            ),
-        )
+        response = call_gemini_with_retry(prompt)
 
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(response.text)
 
-        time.sleep(10)
+        print(f"  -> Guion guardado: {out_path}")
+        time.sleep(12)
 
 if __name__ == "__main__":
     generate_scripts()
