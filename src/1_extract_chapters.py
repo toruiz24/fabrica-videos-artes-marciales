@@ -1,45 +1,67 @@
 import fitz
 import json
 import os
+import re
 
 INPUT_PDF = "input/documento.pdf"
 OUTPUT_DIR = "build/chapters"
 
+def clean_filename(title):
+    clean = re.sub(r'[^\w\s-]', '', title).strip().lower()
+    return re.sub(r'[-\s]+', '_', clean)[:45]
+
 def extract_modules():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     doc = fitz.open(INPUT_PDF)
-    toc = doc.get_toc()
-    modules = []
-    level_1_toc = [item for item in toc if item[0] == 1]
+    
+    full_pages = [page.get_text("text") for page in doc]
+    full_text = "\n".join(full_pages)
 
-    if len(level_1_toc) >= 2:
-        print(f"Índice detectado con {len(level_1_toc)} capítulos.")
-        for i, item in enumerate(level_1_toc):
-            title = item[1]
-            start_page = item[2] - 1
-            end_page = level_1_toc[i+1][2] - 1 if i + 1 < len(level_1_toc) else len(doc)
-            text = "".join(doc[p].get_text("text") + "\n" for p in range(start_page, end_page))
-            if len(text.strip()) > 500:
-                modules.append({"id": f"mod_{i+1:02d}", "title": title, "content": text})
+    chapter_pattern = re.compile(
+        r'(?m)^(?:\s*)(PRÓLOGO|INTRODUCCIÓN|CAP[ÍI]TULO\s+\d+[^\n]*|M[ÓO]DULO\s+\d+[^\n]*|EP[ÍI]LOGO[^\n]*)\s*$',
+        re.IGNORECASE
+    )
+    matches = list(chapter_pattern.finditer(full_text))
+
+    modules = []
+    if len(matches) >= 2:
+        print(f"Estructura detectada con {len(matches)} secciones reales.")
+        for i, match in enumerate(matches):
+            title = match.group(1).strip()
+            start_pos = match.start()
+            end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(full_text)
+            content = full_text[start_pos:end_pos].strip()
+
+            if len(content) > 800:
+                idx = len(modules) + 1
+                modules.append({
+                    "id": f"cap_{idx:02d}",
+                    "slug": clean_filename(title),
+                    "title": title,
+                    "content": content
+                })
     else:
-        print("Sin índice claro. Dividiendo por bloques de lectura...")
-        chunk_size = 14000
-        current_text = ""
-        mod_idx = 1
-        for page in doc:
-            current_text += page.get_text("text") + "\n"
-            if len(current_text) >= chunk_size:
-                modules.append({"id": f"mod_{mod_idx:02d}", "title": f"Módulo {mod_idx}", "content": current_text})
-                current_text = ""
-                mod_idx += 1
-        if len(current_text.strip()) > 500:
-            modules.append({"id": f"mod_{mod_idx:02d}", "title": f"Módulo {mod_idx}", "content": current_text})
+        toc = [item for item in doc.get_toc() if item[0] == 1]
+        if len(toc) >= 2:
+            for i, item in enumerate(toc):
+                title = item[1].strip()
+                start_p = item[2] - 1
+                end_p = toc[i + 1][2] - 1 if i + 1 < len(toc) else len(doc)
+                content = "\n".join(full_pages[start_p:end_p]).strip()
+                if len(content) > 800:
+                    idx = len(modules) + 1
+                    modules.append({
+                        "id": f"cap_{idx:02d}",
+                        "slug": clean_filename(title),
+                        "title": title,
+                        "content": content
+                    })
 
     for mod in modules:
-        with open(os.path.join(OUTPUT_DIR, f"{mod['id']}.json"), "w", encoding="utf-8") as f:
+        out_file = os.path.join(OUTPUT_DIR, f"{mod['id']}.json")
+        with open(out_file, "w", encoding="utf-8") as f:
             json.dump(mod, f, ensure_ascii=False, indent=2)
-
-    print(f"Total de módulos generados: {len(modules)}")
+        print(f"  -> {mod['id']}: {mod['title']} ({len(mod['content'])} caracteres)")
 
 if __name__ == "__main__":
     extract_modules()
