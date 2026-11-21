@@ -15,12 +15,20 @@ jobs:
       - name: 1. Clonar repositorio
         uses: actions/checkout@v4
 
-      - name: 2. Configurar Python 3.11
+      - name: 2. Restaurar progreso guardado (si existe)
+        uses: actions/cache/restore@v4
+        with:
+          path: build
+          key: fabrica-progreso-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fabrica-progreso-${{ hashFiles('input/*.pdf') }}-
+
+      - name: 3. Configurar Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 3. Instalar FFmpeg y dependencias
+      - name: 4. Instalar FFmpeg y dependencias
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -28,23 +36,33 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: 4. Extraer capitulos del PDF
+      - name: 5. Extraer capitulos del PDF
         run: python src/1_extract_chapters.py
 
-      - name: 5. Generar guiones visuales con Gemini API
+      - name: 6. Generar guiones visuales con Gemini API
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
         run: python src/2_generate_script.py
 
-      - name: 6. Renderizar animaciones y locuciones
+      - name: 7. Renderizar animaciones y locuciones
         run: python src/3_render_scenes.py
 
-      - name: 7. Compilar videos MP4 finales
+      - name: 8. Compilar videos MP4 finales
         run: python src/4_compile_video.py
 
-      - name: 8. Publicar videos para descarga
+      - name: 9. Guardar progreso en cache (incluso si hubo error)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: build
+          key: fabrica-progreso-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 10. Publicar videos terminados para descarga
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: videos-artes-marciales-mp4
           path: output/*.mp4
+          if-no-files-found: ignore
           retention-days: 14
