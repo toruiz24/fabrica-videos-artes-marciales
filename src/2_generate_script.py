@@ -6,7 +6,18 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+# Soporta tu clave principal y, si algún día agregás una segunda, la usa de respaldo
+API_KEYS = [k for k in [os.environ.get("GEMINI_API_KEY"), os.environ.get("GEMINI_API_KEY_2")] if k]
+
+# Cada modelo tiene su propia cuota diaria gratuita independiente
+MODELS_FALLBACK = [
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
 
 class Scene(BaseModel):
     scene_number: int
@@ -48,25 +59,34 @@ REGLAS PEDAGÓGICAS Y VISUALES:
    - En líneas y flechas SVG (<path>, <line>, <circle>), usá class="svg-draw" para que se tracen solas en pantalla.
 """
 
-def call_gemini_with_retry(prompt, max_retries=6):
-    for attempt in range(1, max_retries + 1):
-        try:
-            return client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_schema=VideoScript,
-                    temperature=0.4,
-                ),
-            )
-        except Exception as e:
-            if attempt == max_retries:
-                raise
-            wait_time = 15 * attempt
-            print(f"  [Aviso] Servidor ocupado ({e}). Reintentando en {wait_time}s (intento {attempt}/{max_retries})...")
-            time.sleep(wait_time)
+def call_gemini_smart(prompt):
+    last_error = None
+    for key_idx, api_key in enumerate(API_KEYS, start=1):
+        client = genai.Client(api_key=api_key)
+        for model_name in MODELS_FALLBACK:
+            for attempt in range(1, 3):
+                try:
+                    print(f"  -> Probando {model_name} (Key #{key_idx}, intento {attempt})...")
+                    return client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            response_mime_type="application/json",
+                            response_schema=VideoScript,
+                            temperature=0.4,
+                        ),
+                    )
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e)
+                    # Si agotó cuota diaria (429) o no existe el modelo (404), salta directo al siguiente modelo sin gastar intentos
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "404" in err_str:
+                        print(f"  [Cambio de modelo] {model_name} sin cuota disponible. Saltando al siguiente...")
+                        break
+                    print(f"  [Aviso] {model_name} ocupado ({err_str[:80]}...). Esperando 10s...")
+                    time.sleep(10)
+    raise RuntimeError(f"Todos los modelos agotaron su cuota temporalmente. Último error: {last_error}")
 
 def generate_scripts():
     os.makedirs("build/scripts", exist_ok=True)
@@ -77,19 +97,20 @@ def generate_scripts():
             chapter = json.load(f)
 
         out_path = f"build/scripts/{chapter['id']}_script.json"
-        if os.path.exists(out_path):
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 100:
+            print(f"Saltando (ya generado previamente): {chapter['title']}")
             continue
 
         print(f"Generando análisis visual marcial para: {chapter['title']}...")
         prompt = f"Título del Módulo: {chapter['title']}\n\nContenido técnico a transformar en demostración visual:\n{chapter['content'][:28000]}"
 
-        response = call_gemini_with_retry(prompt)
+        response = call_gemini_smart(prompt)
 
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(response.text)
 
         print(f"  -> Guion guardado: {out_path}")
-        time.sleep(12)
+        time.sleep(8)
 
 if __name__ == "__main__":
     generate_scripts()
