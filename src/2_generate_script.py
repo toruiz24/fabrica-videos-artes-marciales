@@ -2,6 +2,7 @@ import os
 import json
 import glob
 import time
+import urllib.request
 from google import genai
 from google.genai import types
 from openai import OpenAI
@@ -47,7 +48,7 @@ REGLAS PEDAGÓGICAS Y VISUALES:
    - En líneas y flechas SVG (<path>, <line>, <circle>), usá class="svg-draw" para que se tracen solas en pantalla.
 
 FORMATO DE SALIDA OBLIGATORIO (JSON PURO):
-Devolvé ÚNICAMENTE un objeto JSON válido (sin bloques de markdown ```json) con exactamente esta estructura:
+Devolvé ÚNICAMENTE un objeto JSON válido (sin texto antes ni después, sin bloques ```json) con esta estructura exacta:
 {
   "module_title": "Título del módulo",
   "scenes": [
@@ -62,106 +63,102 @@ Devolvé ÚNICAMENTE un objeto JSON válido (sin bloques de markdown ```json) co
 }
 """
 
-def clean_json_text(text):
+def extract_json_object(text):
     text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end + 1]
     return text
+
+def get_openrouter_free_models():
+    models = ["openrouter/free"]
+    try:
+        req = urllib.request.Request("https://openrouter.ai", headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            for m in data.get("data", []):
+                mid = m.get("id", "")
+                ctx = m.get("context_length", 0)
+                if mid.endswith(":free") and ctx >= 16000:
+                    models.append(mid)
+    except Exception as e:
+        print(f"  [Aviso] No se pudo consultar catálogo vivo de OpenRouter: {e}")
+    return models[:8]
+
+def try_openrouter(prompt):
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return None
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+        default_headers={"HTTP-Referer": "https://github.com", "X-Title": "FabricaVideosEducativos"}
+    )
+    models = get_openrouter_free_models()
+    for model_name in models:
+        try:
+            print(f"  -> [OpenRouter] Probando {model_name}...")
+            # Sin response_format para que los endpoints gratuitos no devuelvan 404
+            res = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt[:22000]},
+                ],
+                temperature=0.4,
+                max_tokens=8000,
+            )
+            content = res.choices.message.content
+            if not content:
+                continue
+            raw_json = extract_json_object(content)
+            validated = VideoScript.model_validate_json(raw_json)
+            return validated.model_dump_json(indent=2)
+        except Exception as e:
+            print(f"  [Salto OpenRouter] {model_name}: {str(e)[:110]}...")
+            time.sleep(3)
+    return None
 
 def try_gemini(prompt):
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return None
     client = genai.Client(api_key=api_key)
-    for model_name in ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite"]:
-        try:
-            print(f"  -> [Google Gemini] Probando {model_name}...")
-            res = client.models.generate_content(
-                model=model_name,
-                contents=prompt[:28000],
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_schema=VideoScript,
-                    temperature=0.4,
-                ),
-            )
-            VideoScript.model_validate_json(res.text)
-            return res.text
-        except Exception as e:
-            print(f"  [Salto Gemini] {model_name} no disponible: {str(e)[:90]}...")
-    return None
-
-def try_openai_compatible(provider_name, base_url, api_key, models, prompt, max_chars=24000):
-    if not api_key:
-        return None
-    client = OpenAI(base_url=base_url, api_key=api_key)
-    for model_name in models:
-        for attempt in range(1, 3):
+    for model_name in ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-flash-lite"]:
+        for attempt in range(1, 4):
             try:
-                print(f"  -> [{provider_name}] Probando {model_name} (intento {attempt})...")
-                res = client.chat.completions.create(
+                print(f"  -> [Google Gemini] Probando {model_name} (intento {attempt}/3)...")
+                res = client.models.generate_content(
                     model=model_name,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt[:max_chars]},
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.4,
-                    max_tokens=8000,
+                    contents=prompt[:28000],
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=VideoScript,
+                        temperature=0.4,
+                    ),
                 )
-                raw_json = clean_json_text(res.choices[0].message.content)
-                validated = VideoScript.model_validate_json(raw_json)
-                return validated.model_dump_json(indent=2)
+                VideoScript.model_validate_json(res.text)
+                return res.text
             except Exception as e:
                 err = str(e)
-                print(f"  [Salto {provider_name}] {model_name}: {err[:100]}...")
-                if "429" in err or "401" in err or "403" in err or "404" in err or "413" in err:
+                print(f"  [Salto Gemini] {model_name}: {err[:100]}...")
+                if "429" in err or "RESOURCE_EXHAUSTED" in err or "404" in err:
                     break
-                time.sleep(8)
+                time.sleep(12 * attempt)
     return None
 
 def generate_with_any_ai(prompt):
-    # 1. Intentar OpenRouter primero
-    result = try_openai_compatible(
-        provider_name="OpenRouter",
-        base_url="https://openrouter.ai",
-        api_key=os.environ.get("OPENROUTER_API_KEY"),
-        models=[
-            "openrouter/free",
-            "nvidia/nemotron-3.5-lightning:free",
-            "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "google/gemma-4-31b-it:free",
-        ],
-        prompt=prompt,
-        max_chars=24000,
-    )
+    result = try_openrouter(prompt)
     if result:
         return result
 
-    # 2. Intentar Google Gemini
     result = try_gemini(prompt)
     if result:
         return result
 
-    # 3. Intentar GitHub Models (integrado gratis en Actions)
-    result = try_openai_compatible(
-        provider_name="GitHub Models",
-        base_url="https://github.ai",
-        api_key=os.environ.get("GITHUB_TOKEN"),
-        models=["openai/gpt-4o-mini", "meta/Llama-3.3-70B-Instruct", "deepseek/DeepSeek-V3"],
-        prompt=prompt,
-        max_chars=14000,
-    )
-    if result:
-        return result
-
-    raise RuntimeError("Ningún proveedor de IA pudo generar el guion. Revisá tus claves o límites diarios.")
+    raise RuntimeError("Ni OpenRouter ni Google Gemini pudieron generar el guion en este momento.")
 
 def generate_scripts():
     os.makedirs("build/scripts", exist_ok=True)
@@ -173,7 +170,7 @@ def generate_scripts():
 
         out_path = f"build/scripts/{chapter['id']}_script.json"
         if os.path.exists(out_path) and os.path.getsize(out_path) > 100:
-            print(f"Saltando (ya generado previamente): {chapter['title']}")
+            print(f"Saltando (ya generado en caché): {chapter['title']}")
             continue
 
         print(f"Generando análisis visual marcial para: {chapter['title']}...")
@@ -185,7 +182,7 @@ def generate_scripts():
             f.write(json_text)
 
         print(f"  -> Guion guardado: {out_path}")
-        time.sleep(6)
+        time.sleep(5)
 
 if __name__ == "__main__":
     generate_scripts()
