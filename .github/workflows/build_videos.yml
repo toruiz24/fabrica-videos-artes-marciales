@@ -15,13 +15,13 @@ jobs:
       - name: 1. Clonar repositorio
         uses: actions/checkout@v4
 
-      - name: 2. Restaurar progreso guardado V2
+      - name: 2. Restaurar progreso guardado V3
         uses: actions/cache/restore@v4
         with:
           path: build
-          key: fabrica-doc-v2-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: fabrica-doc-v3-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            fabrica-doc-v2-${{ hashFiles('input/*.pdf') }}-
+            fabrica-doc-v3-${{ hashFiles('input/*.pdf') }}-
 
       - name: 3. Configurar Python 3.11
         uses: actions/setup-python@v5
@@ -51,12 +51,12 @@ jobs:
       - name: 8. Compilar documentales MP4 finales
         run: python src/4_compile_video.py
 
-      - name: 9. Guardar progreso en cache
+      - name: 9. Guardar progreso en cache V3
         if: always()
         uses: actions/cache/save@v4
         with:
           path: build
-          key: fabrica-doc-v2-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: fabrica-doc-v3-${{ hashFiles('input/*.pdf') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: 10. Publicar documentales para descarga
         if: always()
