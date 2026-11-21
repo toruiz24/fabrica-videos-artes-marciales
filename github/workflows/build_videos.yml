@@ -1,0 +1,50 @@
+name: Fabrica Autonoma de Videos Educativos
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'input/*.pdf'
+
+jobs:
+  generar-videos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: 1. Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. Instalar FFmpeg y dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: 4. Extraer capitulos del PDF
+        run: python src/1_extract_chapters.py
+
+      - name: 5. Generar guiones visuales con Gemini API
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python src/2_generate_script.py
+
+      - name: 6. Renderizar animaciones y locuciones
+        run: python src/3_render_scenes.py
+
+      - name: 7. Compilar videos MP4 finales
+        run: python src/4_compile_video.py
+
+      - name: 8. Publicar videos para descarga
+        uses: actions/upload-artifact@v4
+        with:
+          name: videos-artes-marciales-mp4
+          path: output/*.mp4
+          retention-days: 14
