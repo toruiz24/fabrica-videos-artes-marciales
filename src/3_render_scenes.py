@@ -16,9 +16,22 @@ def get_audio_duration(mp3_path):
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return float(result.stdout)
 
-async def generate_tts(text, out_mp3):
-    communicate = edge_tts.Communicate(text, VOICE, rate="+6%")
-    await communicate.save(out_mp3)
+async def generate_tts(text, out_mp3, max_retries=5):
+    for attempt in range(1, max_retries + 1):
+        try:
+            communicate = edge_tts.Communicate(text, VOICE, rate="+6%")
+            await communicate.save(out_mp3)
+            if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 100:
+                return
+            raise RuntimeError("Archivo de audio vacío")
+        except Exception as e:
+            if os.path.exists(out_mp3):
+                os.remove(out_mp3)
+            if attempt == max_retries:
+                raise
+            wait_time = 5 * attempt
+            print(f"  [Aviso TTS] Reintentando locución en {wait_time}s (intento {attempt}/{max_retries}): {e}")
+            await asyncio.sleep(wait_time)
 
 async def render_all():
     script_files = sorted(glob.glob("build/scripts/*_script.json"))
@@ -41,7 +54,7 @@ async def render_all():
                 webm_dir = f"{mod_dir}/temp_vid_{s_num:03d}"
                 final_scene_mp4 = f"{mod_dir}/scene_{s_num:03d}.mp4"
 
-                if os.path.exists(final_scene_mp4):
+                if os.path.exists(final_scene_mp4) and os.path.getsize(final_scene_mp4) > 1000:
                     continue
 
                 await generate_tts(scene["narration"], mp3_path)
@@ -75,6 +88,7 @@ async def render_all():
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                 print(f"  -> Escena {s_num:02d} lista ({duration:.1f}s)")
+                await asyncio.sleep(1.5)  # Pausa breve para no saturar el servicio TTS
 
         await browser.close()
 
