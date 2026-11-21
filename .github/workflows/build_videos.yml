@@ -6,6 +6,10 @@ on:
     paths:
       - 'input/*.pdf'
 
+permissions:
+  contents: read
+  models: read
+
 jobs:
   generar-videos:
     runs-on: ubuntu-latest
@@ -39,10 +43,11 @@ jobs:
       - name: 5. Extraer capitulos del PDF
         run: python src/1_extract_chapters.py
 
-      - name: 6. Generar guiones visuales con Gemini API
+      - name: 6. Generar guiones visuales (Multi-IA)
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python src/2_generate_script.py
 
       - name: 7. Renderizar animaciones y locuciones
