@@ -148,10 +148,10 @@ def fetch_wikimedia_photo(query, out_img, scene_seed):
             for idx, page in enumerate(list(pages.values())[:4]):
                 iinfo = next(iter(page.get("imageinfo", [])), {})
                 img_url = iinfo.get("thumburl") or iinfo.get("url", "")
-                if img_url.lower().endswith((".jpg", ".jpeg", ".png")):
+                if img_url and any(ext in img_url.lower() for ext in [".jpg", ".jpeg", ".png"]):
                     local_path = f"{PIXABAY_IMG_CACHE}/{q_hash}_{idx}.jpg"
                     r = requests.get(img_url, headers=WIKI_HEADERS, timeout=30)
-                    if r.status_code == 200 and len(r.content) > 20000:
+                    if r.status_code == 200 and len(r.content) > 15000:
                         with open(local_path, "wb") as f:
                             f.write(r.content)
                         downloaded.append(local_path)
@@ -176,6 +176,7 @@ def fetch_pixabay_photo_fallback(query, out_img, scene_seed):
                     dst.write(src.read())
                 return True
             try:
+                time.sleep(0.8)
                 params = {
                     "key": PIXABAY_KEY,
                     "q": search_q,
@@ -185,14 +186,15 @@ def fetch_pixabay_photo_fallback(query, out_img, scene_seed):
                 }
                 resp = requests.get(PIXABAY_IMG_BASE, params=params, headers=API_HEADERS, timeout=20)
                 if resp.status_code != 200:
-                    break
+                    time.sleep(3)
+                    continue
                 downloaded = []
                 for idx, hit in enumerate(resp.json().get("hits", [])[:4]):
                     img_url = hit.get("largeImageURL") or hit.get("webformatURL")
                     if img_url:
                         local_path = f"{PIXABAY_IMG_CACHE}/{q_hash}_{idx}.jpg"
                         r = requests.get(img_url, headers=CDN_HEADERS, timeout=30)
-                        if r.status_code == 200 and len(r.content) > 20000:
+                        if r.status_code == 200 and len(r.content) > 15000:
                             with open(local_path, "wb") as f:
                                 f.write(r.content)
                             downloaded.append(local_path)
@@ -205,23 +207,18 @@ def fetch_pixabay_photo_fallback(query, out_img, scene_seed):
                 pass
     return fetch_wikimedia_photo(query, out_img, scene_seed)
 
-def generate_ai_image(prompt, fallback_query, out_img, seed):
-    if os.path.exists(out_img) and os.path.getsize(out_img) > 20000:
+def get_scene_image(fallback_query, out_img, seed, broll_path=None):
+    if os.path.exists(out_img) and os.path.getsize(out_img) > 15000:
         return True
-    encoded = urllib.parse.quote(prompt)
-    url = f"{POLLINATIONS_BASE}{encoded}"
-    params = {"width": 1280, "height": 720, "nologo": "true", "seed": seed}
-    for attempt in range(1, 3):
-        try:
-            r = requests.get(url, params=params, headers=WIKI_HEADERS, timeout=45)
-            if r.status_code == 200 and len(r.content) > 20000 and b"html" not in r.content[:200].lower():
-                with open(out_img, "wb") as f:
-                    f.write(r.content)
-                return True
-            print(f"  [Aviso IA Img] HTTP {r.status_code} (intento {attempt})")
-        except Exception as e:
-            print(f"  [Aviso IA Img] Timeout/Error (intento {attempt}): {e}")
-    return fetch_pixabay_photo_fallback(fallback_query, out_img, seed)
+    if fetch_pixabay_photo_fallback(fallback_query, out_img, seed):
+        return True
+    if broll_path and os.path.exists(broll_path):
+        subprocess.run([
+            "ffmpeg", "-y", "-ss", "1", "-i", broll_path, "-vframes", "1", out_img
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(out_img) and os.path.getsize(out_img) > 10000:
+            return True
+    return False
 
 def render_all():
     script_files = sorted(glob.glob("build/scripts/*_script.json"))
@@ -254,10 +251,11 @@ def render_all():
                 generate_tts_and_subs(scene["narration"], mp3_path, srt_path)
             duration = get_audio_duration(mp3_path) + 0.35
 
+            broll_path = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
+            if not broll_path or not os.path.exists(broll_path):
+                raise RuntimeError("No se pudo descargar ningún video de Pixabay ni Wikimedia.")
+
             if need_pixabay:
-                broll_path = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
-                if not broll_path or not os.path.exists(broll_path):
-                    raise RuntimeError("No se pudo descargar ningún video de Pixabay ni Wikimedia.")
                 vf = f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
                 subprocess.run([
                     "ffmpeg", "-y", "-stream_loop", "-1", "-i", broll_path, "-i", mp3_path,
@@ -267,14 +265,14 @@ def render_all():
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             if need_ia:
-                has_img = generate_ai_image(
-                    scene.get("ai_image_prompt", "martial arts documentary"),
+                has_img = get_scene_image(
                     scene.get("pixabay_query", "martial arts"),
                     img_path,
-                    s_num * 17
+                    s_num * 17,
+                    broll_path=broll_path
                 )
                 if not has_img:
-                    raise RuntimeError("No se pudo obtener imagen IA ni respaldo fotográfico.")
+                    raise RuntimeError("No se pudo obtener imagen ni fotograma.")
                 frames = int(duration * 30)
                 if s_num % 2 == 0:
                     zp = f"zoompan=z='min(zoom+0.0008,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps=30"
