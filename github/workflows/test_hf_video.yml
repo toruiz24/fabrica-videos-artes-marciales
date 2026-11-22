@@ -1,1 +1,36 @@
+name: Prueba Clip IA Real (Hugging Face)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-hf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 1. Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. Instalar dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install huggingface_hub>=0.28.0 edge-tts>=7.3.1
+
+      - name: 4. Generar clip de prueba con IA
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python src/test_hf_video.py
+
+      - name: 5. Publicar video de prueba
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-palma-ia-real-mp4
+          path: output/test_palma_ia_real.mp4
 
