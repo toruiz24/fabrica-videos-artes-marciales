@@ -72,7 +72,7 @@ def extract_json_object(text):
     return text
 
 def get_openrouter_free_models():
-    models = ["openrouter/free"]
+    models = []
     try:
         req = urllib.request.Request("https://openrouter.ai", headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -83,7 +83,8 @@ def get_openrouter_free_models():
                     models.append(mid)
     except Exception:
         pass
-    return models[:8]
+    models.append("openrouter/free")
+    return models[:10]
 
 def try_openrouter(prompt):
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -113,18 +114,29 @@ def try_openrouter(prompt):
             return validated.model_dump_json(indent=2)
         except Exception as e:
             print(f"  [Salto OpenRouter] {model_name}: {str(e)[:95]}...")
-            time.sleep(3)
+            time.sleep(2)
     return None
+
+def get_active_gemini_models(client):
+    models = ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-flash-lite"]
+    try:
+        for m in client.models.list():
+            name = getattr(m, "name", "").replace("models/", "")
+            if "flash" in name and "tts" not in name and "image" not in name and name not in models:
+                models.append(name)
+    except Exception:
+        pass
+    return models[:8]
 
 def try_gemini(prompt):
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return None
     client = genai.Client(api_key=api_key)
-    for model_name in ["gemini-2.5-flash", "gemini-2.0-flash"]:
-        for attempt in range(1, 4):
+    for model_name in get_active_gemini_models(client):
+        for attempt in range(1, 3):
             try:
-                print(f"  -> [Google Gemini] Probando {model_name} (intento {attempt}/3)...")
+                print(f"  -> [Google Gemini] Probando {model_name} (intento {attempt}/2)...")
                 res = client.models.generate_content(
                     model=model_name,
                     contents=prompt[:30000],
@@ -142,7 +154,7 @@ def try_gemini(prompt):
                 print(f"  [Salto Gemini] {model_name}: {err[:95]}...")
                 if "429" in err or "RESOURCE_EXHAUSTED" in err or "404" in err:
                     break
-                time.sleep(10 * attempt)
+                time.sleep(8 * attempt)
     return None
 
 def generate_scripts():
@@ -173,7 +185,7 @@ def generate_scripts():
             f.write(json_text)
 
         print(f"  -> Guion listo: {out_path}")
-        time.sleep(4)
+        time.sleep(3)
 
 if __name__ == "__main__":
     generate_scripts()
