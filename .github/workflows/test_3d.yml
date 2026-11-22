@@ -1,0 +1,36 @@
+name: Prueba Piloto Simulador 3D
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-3d:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 1. Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. Instalar dependencias y motor 3D local
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install edge-tts playwright
+          playwright install chromium
+          playwright install-deps chromium
+          curl -sL https://unpkg.com -o src/three.min.js
+
+      - name: 4. Renderizar escena 3D de prueba
+        run: python src/test_3d_scene.py
+
+      - name: 5. Publicar video de prueba
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-simulador-3d-mp4
+          path: output/test_palma_abierta_3d.mp4
