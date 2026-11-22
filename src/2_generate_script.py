@@ -11,13 +11,19 @@ from pydantic import BaseModel, Field
 class Scene(BaseModel):
     scene_number: int
     narration: str = Field(
-        description="Narración estilo documental 100% en español rioplatense (Argentina), usando voseo natural ('fijate', 'mirá', 'desplazate', 'cubrite'). Entre 35 y 55 palabras por escena."
+        description="Narración documental 100% en español rioplatense (Argentina), con voseo natural ('fijate', 'mirá', 'desplazate', 'cubrite'). Entre 35 y 55 palabras por escena."
+    )
+    scene_type: str = Field(
+        description="Elegí 'ai_technique' ONLY cuando la escena enseñe una ejecución física o movimiento concreto (golpe, bloqueo, agarre, postura, desplazamiento). Elegí 'broll_context' para introducción, psicología, entorno urbano, prevención o análisis teórico (máximo 7 escenas 'ai_technique' por capítulo)."
+    )
+    initial_pose_prompt: str = Field(
+        description="Si scene_type es 'ai_technique': fotografía fotorrealista 16:9 de la POSTURA INICIAL antes de lanzar el golpe o defensa (dos personas frente a frente en guardia lista, ángulos claros, sin texto ni marcas de agua)."
+    )
+    motion_action_prompt: str = Field(
+        description="Si scene_type es 'ai_technique': descripción física precisa del MOVIMIENTO que ocurre desde esa postura inicial (ej: 'the instructor explosively thrusts his open palm forward into the attacker chin keeping torso straight without twisting, causing head snap back')."
     )
     pixabay_query: str = Field(
-        description="Búsqueda corta en inglés (2 a 3 palabras) para encontrar video real en Pixabay (ej: 'martial arts', 'boxing training', 'self defense', 'night street', 'kickboxing')."
-    )
-    ai_image_prompt: str = Field(
-        description="Prompt detallado en inglés para generar una escena cinematográfica fotorrealista 16:9 (ej: 'cinematic documentary shot of urban self defense wrist escape technique at night, dramatic street lighting, 35mm film, photorealistic, no text')."
+        description="Búsqueda corta en inglés (2 a 3 palabras) para video real de contexto (ej: 'martial arts', 'boxing training', 'night street', 'self defense')."
     )
 
 class DocumentaryScript(BaseModel):
@@ -26,17 +32,18 @@ class DocumentaryScript(BaseModel):
     scenes: list[Scene]
 
 SYSTEM_PROMPT = """
-Sos un director y guionista argentino de documentales sobre artes marciales, biomecánica y defensa personal urbana.
-Tu trabajo es transformar el texto completo del capítulo en un guion documental inmersivo de 8 a 12 minutos dividido en 24 a 32 escenas cortas y dinámicas (cada escena dura entre 12 y 20 segundos).
+Sos un director técnico y guionista argentino de documentales sobre artes marciales y defensa personal urbana.
+Tu tarea es convertir el texto completo del capítulo en un guion documental estructurado en escenas cortas y dinámicas (12 a 18 segundos cada una), cubriendo todas las ideas del capítulo sin resumir de más.
 
 REGLAS IDIOMÁTICAS (ESPAÑOL RIOPLATENSE ESTRICTO):
-1. Toda la narración ('narration') debe estar en español rioplatense natural (Argentina), con voseo auténtico y tono de documental serio y atrapante ("Fijate lo que pasa cuando...", "En la calle no hay árbitro...", "Si te quedás estático en esa distancia...").
-2. Desarrollá todos los conceptos técnicos, tácticos y ejemplos reales del capítulo sin recortar ideas importantes.
+- Toda la narración ('narration') va en español rioplatense natural (Argentina), con voseo auténtico y tono serio de documental.
 
-REGLAS VISUALES (PARA AMBAS VERSIONES EN PARALELO):
-1. Para CADA escena tenés que completar tanto 'pixabay_query' (para la versión con videos reales) como 'ai_image_prompt' (para la versión 100% ilustrada por IA).
-2. En 'pixabay_query', usá términos simples en inglés que devuelvan buenos videos de acción, combate, entrenamiento o ciudad nocturna en Pixabay.
-3. En 'ai_image_prompt', describí una fotografía cinematográfica realista 16:9 (sin texto ni letras en la imagen) que ilustre exactamente la situación o técnica que se está narrando.
+REGLAS DE DIRECCIÓN VISUAL (CUIDADO DE CUPO GPU):
+1. Clasificá cada escena en 'ai_technique' o 'broll_context'.
+2. Usá 'ai_technique' ÚNICAMENTE en las escenas clave donde se demuestra una mecánica física o técnica corporal concreta (entre 4 y 7 escenas por capítulo).
+3. En 'initial_pose_prompt' describí SIEMPRE la postura inicial lista para actuar (nunca el golpe ya terminado), en plano medio lateral o 3/4 nítido, estilo fotografía realista 8k sin texto.
+4. En 'motion_action_prompt' describí exactamente el movimiento físico que se ejecuta en el video y la reacción de impacto.
+5. Para todas las demás escenas teóricas, estratégicas o de contexto urbano, usá 'broll_context' con un 'pixabay_query' simple en inglés.
 
 FORMATO DE SALIDA (JSON PURO):
 Devolvé ÚNICAMENTE un objeto JSON válido (sin ```json) con esta estructura exacta:
@@ -47,8 +54,10 @@ Devolvé ÚNICAMENTE un objeto JSON válido (sin ```json) con esta estructura ex
     {
       "scene_number": 1,
       "narration": "...",
-      "pixabay_query": "martial arts",
-      "ai_image_prompt": "..."
+      "scene_type": "ai_technique",
+      "initial_pose_prompt": "...",
+      "motion_action_prompt": "...",
+      "pixabay_query": "martial arts"
     }
   ]
 }
@@ -94,10 +103,10 @@ def try_openrouter(prompt):
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt[:26000]},
                 ],
-                temperature=0.4,
+                temperature=0.35,
                 max_tokens=8000,
             )
-            content = res.choices.message.content
+            content = res.choices[0].message.content
             if not content:
                 continue
             validated = DocumentaryScript.model_validate_json(extract_json_object(content))
@@ -112,7 +121,7 @@ def try_gemini(prompt):
     if not api_key:
         return None
     client = genai.Client(api_key=api_key)
-    for model_name in ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-flash-lite"]:
+    for model_name in ["gemini-2.5-flash", "gemini-2.0-flash"]:
         for attempt in range(1, 4):
             try:
                 print(f"  -> [Google Gemini] Probando {model_name} (intento {attempt}/3)...")
@@ -123,7 +132,7 @@ def try_gemini(prompt):
                         system_instruction=SYSTEM_PROMPT,
                         response_mime_type="application/json",
                         response_schema=DocumentaryScript,
-                        temperature=0.4,
+                        temperature=0.35,
                     ),
                 )
                 DocumentaryScript.model_validate_json(res.text)
@@ -149,11 +158,11 @@ def generate_scripts():
             print(f"Saltando (ya en caché): {chapter['title']}")
             continue
 
-        print(f"Creando guion documental dual para: {chapter['title']}...")
+        print(f"Creando guion documental técnico para: {chapter['title']}...")
         prompt = (
             f"Título del Capítulo: {chapter['title']}\n"
             f"Slug sugerido: {chapter['slug']}\n\n"
-            f"Texto completo del capítulo a convertir en documental:\n{chapter['content']}"
+            f"Texto completo del capítulo:\n{chapter['content']}"
         )
 
         json_text = try_openrouter(prompt) or try_gemini(prompt)
@@ -163,7 +172,7 @@ def generate_scripts():
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(json_text)
 
-        print(f"  -> Guion documental listo: {out_path}")
+        print(f"  -> Guion listo: {out_path}")
         time.sleep(4)
 
 if __name__ == "__main__":
