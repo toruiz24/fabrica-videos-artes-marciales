@@ -1,8 +1,10 @@
 import os, shutil, subprocess
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, login
 from gradio_client import Client
 
 HF_TOKEN = os.environ["HF_TOKEN"]
+login(token=HF_TOKEN)
+
 VOICE = "es-AR-TomasNeural"
 NARRATION = (
     "Fijate bien en este golpe: lanzás la palma abierta directo hacia el mentón del agresor, "
@@ -32,20 +34,27 @@ def find_video(res):
     return None
 
 def run_zerogpu(out_mp4):
-    spaces = ["Lightricks/ltx-video-distilled", "Lightricks/LTX-Video", "Wan-AI/Wan2.1", "THUDM/CogVideoX-5B-Space"]
+    spaces = [
+        "Wan-AI/Wan2.1",
+        "Lightricks/ltx-video-distilled",
+        "Lightricks/LTX-Video",
+        "tencent/HunyuanVideo",
+        "THUDM/CogVideoX-5B-Space",
+    ]
     try:
-        for s in HfApi(token=HF_TOKEN).list_spaces(search="text-to-video", sort="likes", limit=12):
-            if s.id not in spaces: spaces.append(s.id)
+        for s in HfApi(token=HF_TOKEN).list_spaces(search="Wan2.1", sort="likes", limit=10):
+            if s.id not in spaces and "whisper" not in s.id.lower():
+                spaces.append(s.id)
     except Exception:
         pass
 
     for sid in spaces:
         try:
             print(f"Conectando a ZeroGPU: {sid}...")
-            c = Client(sid, hf_token=HF_TOKEN, verbose=False)
+            c = Client(sid, verbose=False)
             named = c.view_api(return_format="dict").get("named_endpoints", {})
             if not named: continue
-            ep = next((k for k in named if any(w in k.lower() for w in ("gen", "txt", "video"))), next(iter(named)))
+            ep = next((k for k in named if any(w in k.lower() for w in ("gen", "txt", "video", "predict"))), next(iter(named)))
             kw = {}
             for p in named[ep].get("parameters", []):
                 n = p.get("parameter_name", "")
@@ -53,13 +62,14 @@ def run_zerogpu(out_mp4):
                 elif "neg" in n.lower(): kw[n] = "blurry, distorted hands, cartoon, 3d, text, watermark"
                 elif p.get("parameter_has_default"): kw[n] = p.get("parameter_default")
             if not kw: continue
+            print(f"  -> Generando en {sid} ({ep})...")
             vid = find_video(c.predict(api_name=ep, **kw))
             if vid and os.path.getsize(vid) > 50000:
                 shutil.copyfile(vid, out_mp4)
                 print(f"  -> ¡Clip generado gratis en {sid}!")
                 return True
         except Exception as e:
-            print(f"  [Salto] {sid}: {str(e)[:100]}")
+            print(f"  [Salto] {sid}: {str(e)[:110]}")
     return False
 
 def main():
