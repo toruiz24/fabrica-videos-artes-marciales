@@ -84,7 +84,7 @@ def get_openrouter_free_models():
     except Exception:
         pass
     models.append("openrouter/free")
-    return models[:10]
+    return models[:12]
 
 def try_openrouter(prompt):
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -179,7 +179,8 @@ def generate_scripts():
 
         json_text = try_openrouter(prompt) or try_gemini(prompt)
         if not json_text:
-            raise RuntimeError("No se pudo generar el guion con ningún proveedor disponible.")
+            print("⏸️ Cupo diario de IA de guiones alcanzado. Guardando progreso para continuar automáticamente en el próximo ciclo...")
+            return
 
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(json_text)
