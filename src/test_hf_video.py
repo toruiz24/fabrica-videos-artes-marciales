@@ -10,15 +10,20 @@ NARRATION = (
     "Fijate bien en este golpe: lanzás la palma abierta directo hacia el mentón del agresor, "
     "manteniendo el tronco completamente bloqueado a cero grados, sin rotar los hombros."
 )
+
+# Fotograma 1: Postura inicial (listas para lanzar el golpe, NO el golpe ya terminado)
 IMG_PROMPT = (
-    "Photorealistic martial arts instructional photograph, side profile medium shot, "
-    "self defense instructor in dark t-shirt executing a crisp open palm heel strike to an attacker's chin, "
-    "instructor torso and shoulders completely straight and vertical without twisting, "
-    "clear anatomical hands, clean modern dojo background, sharp focus, 8k, no text, no watermark"
+    "Photorealistic martial arts instructional photograph, side profile medium shot of two men facing each other "
+    "in a modern dojo at close combat distance. Left man is a self defense instructor in dark t-shirt in a ready "
+    "fighting guard stance, torso straight and upright, hands up near chest ready to strike. Right man is an attacker "
+    "facing him. Sharp focus, realistic lighting, 8k, no text, no watermark"
 )
+
+# Orden de movimiento: ejecuta el golpe hacia adelante y el impacto desde esa guardia
 VID_PROMPT = (
-    "Smooth realistic martial arts movement, the instructor drives his open palm forward into the attacker's chin "
-    "while keeping his torso completely straight and locked, natural impact reaction, sharp focus, steady camera"
+    "Fast realistic martial arts action: the instructor on the left explosively thrusts his open right palm forward "
+    "straight into the chin of the man on the right, keeping his torso and shoulders completely straight without twisting, "
+    "causing the attacker's head to snap back on impact. Natural camera, sharp focus, realistic motion"
 )
 
 def get_dur(p):
@@ -51,7 +56,7 @@ def generate_hd_keyframe(out_img):
     for sid in spaces:
         try:
             if api.get_space_runtime(sid).stage != "RUNNING": continue
-            print(f"Paso 1 (Imagen HD FLUX): {sid}...")
+            print(f"Paso 1 (Postura Inicial FLUX): {sid}...")
             c = Client(sid, verbose=False)
             named = c.view_api(return_format="dict").get("named_endpoints", {})
             for ep, info in named.items():
@@ -69,7 +74,7 @@ def generate_hd_keyframe(out_img):
                 img = find_media(c.predict(api_name=ep, **kw), (".png", ".jpg", ".webp"))
                 if img and os.path.getsize(img) > 30000:
                     shutil.copyfile(img, out_img)
-                    print(f"  -> Fotograma maestro HD generado en {sid}")
+                    print(f"  -> Postura inicial HD lista en {sid}")
                     return True
         except Exception as e:
             print(f"  [Salto FLUX] {sid}: {str(e)[:90]}")
@@ -80,8 +85,8 @@ def animate_hd_i2v(img_path, out_mp4):
     spaces = ["Wan-AI/Wan2.1", "Lightricks/ltx-video-distilled", "Lightricks/LTX-Video"]
     try:
         for q in ["Wan2.2", "Wan2.1", "LTX-Video", "image-to-video"]:
-            for s in api.list_spaces(search=q, sort="likes", limit=10):
-                if s.id not in spaces and not any(b in s.id.lower() for b in ("modelscope", "damo", "whisper")):
+            for s in api.list_spaces(search=q, sort="likes", limit=12):
+                if s.id not in spaces and not any(b in s.id.lower() for b in ("modelscope", "damo", "whisper", "upscale")):
                     spaces.append(s.id)
     except Exception:
         pass
@@ -89,13 +94,13 @@ def animate_hd_i2v(img_path, out_mp4):
     for sid in spaces:
         try:
             if api.get_space_runtime(sid).stage != "RUNNING": continue
-            print(f"Paso 2 (Animación HD I2V): {sid}...")
+            print(f"Paso 2 (Animación de Golpe I2V): {sid}...")
             c = Client(sid, verbose=False)
             named = c.view_api(return_format="dict").get("named_endpoints", {})
             for ep, info in named.items():
-                if "login" in ep.lower(): continue
+                if any(w in ep.lower() for w in ("login", "upscale", "t2v")): continue
                 params = info.get("parameters", [])
-                p_img = next((p for p in params if any(w in p.get("parameter_name", "").lower() for w in ("image", "img", "input_img"))), None)
+                p_img = next((p for p in params if any(w in p.get("parameter_name", "").lower() for w in ("image", "img", "first_frame"))), None)
                 p_txt = next((p for p in params if "prompt" in p.get("parameter_name", "").lower() and "neg" not in p.get("parameter_name", "").lower()), None)
                 if not (p_img and p_txt): continue
                 kw = {}
@@ -103,12 +108,13 @@ def animate_hd_i2v(img_path, out_mp4):
                     n = p.get("parameter_name", "")
                     if n == p_img["parameter_name"]: kw[n] = handle_file(img_path)
                     elif n == p_txt["parameter_name"]: kw[n] = VID_PROMPT
-                    elif "neg" in n.lower(): kw[n] = "blurry, distorted hands, extra fingers, watermark, text, low quality"
+                    elif "neg" in n.lower(): kw[n] = "blurry, distorted hands, extra fingers, watermark, text, low quality, static"
                     elif p.get("parameter_has_default"): kw[n] = p.get("parameter_default")
+                print(f"  -> Ejecutando {ep} con prompt de movimiento...")
                 vid = find_media(c.predict(api_name=ep, **kw), (".mp4", ".webm"))
                 if vid and os.path.getsize(vid) > 80000:
                     shutil.copyfile(vid, out_mp4)
-                    print(f"  -> ¡Clip HD animado en {sid}!")
+                    print(f"  -> ¡Clip HD animado con movimiento en {sid}!")
                     return True
         except Exception as e:
             print(f"  [Salto I2V] {sid}: {str(e)[:90]}")
@@ -120,7 +126,7 @@ def main():
     img, raw, mp3, srt, out = "build/test_hf/key.png", "build/test_hf/raw.mp4", "build/test_hf/v.mp3", "build/test_hf/s.srt", "output/test_palma_ia_real.mp4"
     subprocess.run(["edge-tts", "--voice", VOICE, "--rate=+3%", "--text", NARRATION, "--write-media", mp3, "--write-subtitles", srt], check=True)
     adur = get_dur(mp3) + 0.4
-    if not generate_hd_keyframe(img): raise RuntimeError("No se pudo generar el fotograma maestro HD.")
+    if not generate_hd_keyframe(img): raise RuntimeError("No se pudo generar la postura inicial HD.")
     if not animate_hd_i2v(img, raw): raise RuntimeError("No se pudo animar el clip HD.")
     spd = max(1.0, adur / max(0.5, get_dur(raw)))
     st = "FontName=DejaVu Sans,FontSize=19,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=38"
