@@ -42,12 +42,13 @@ async def run_test():
             "--ignore-gpu-blocklist",
             "--use-gl=angle",
             "--use-angle=swiftshader",
-            "--enable-unsafe-swiftshader"
+            "--enable-unsafe-swiftshader",
+            "--allow-file-access-from-files"
         ])
         page = await browser.new_page(viewport={"width": 1920, "height": 1080})
         page.on("pageerror", lambda err: print(f"[Error JS]: {err}"))
         await page.goto(html_uri)
-        await page.wait_for_function("typeof window.renderFrame === 'function'")
+        await page.wait_for_function("window.sceneReady === true", timeout=25000)
 
         for frame in range(total_frames):
             ratio = frame / max(1, total_frames - 1)
