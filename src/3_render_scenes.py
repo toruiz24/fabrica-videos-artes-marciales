@@ -2,38 +2,34 @@ import os
 import json
 import glob
 import time
+import shutil
 import hashlib
-import urllib.parse
 import subprocess
 import requests
+from huggingface_hub import HfApi, login
+from gradio_client import Client, handle_file
 
-VOICE = "es-AR-TomasNeural"
+HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
+if HF_TOKEN:
+    login(token=HF_TOKEN)
+
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 PIXABAY_VID_CACHE = "build/pixabay_videos"
-PIXABAY_IMG_CACHE = "build/pixabay_photos"
+VOICE = "es-AR-TomasNeural"
 
 API_HEADERS = {"Accept": "application/json"}
 CDN_HEADERS = {"Referer": "https://" + "://pixabay.com"}
-WIKI_HEADERS = {"User-Agent": "FabricaDocumentalBot/1.0 (https://" + "github.com)"}
-
 PIXABAY_VID_BASE = "https://" + "pixabay.com" + "/api/videos/"
-PIXABAY_IMG_BASE = "https://" + "pixabay.com" + "/api/"
-WIKI_API_BASE = "https://" + "commons.wikimedia.org" + "/w/api.php"
-POLLINATIONS_BASE = "https://" + "image.pollinations.ai" + "/prompt/"
 
 def get_audio_duration(mp3_path):
-    cmd = [
-        "ffprobe", "-v", "error", "-show_entries",
-        "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp3_path
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return float(result.stdout)
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp3_path]
+    return float(subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout)
 
 def generate_tts_and_subs(text, out_mp3, out_srt, max_retries=5):
     for attempt in range(1, max_retries + 1):
         try:
             subprocess.run([
-                "edge-tts", "--voice", VOICE, "--rate=+5%",
+                "edge-tts", "--voice", VOICE, "--rate=+4%",
                 "--text", text,
                 "--write-media", out_mp3,
                 "--write-subtitles", out_srt
@@ -45,180 +41,155 @@ def generate_tts_and_subs(text, out_mp3, out_srt, max_retries=5):
                 raise
             time.sleep(4 * attempt)
 
-def fetch_wikimedia_video(query, scene_seed):
+def find_media(res, exts):
+    if isinstance(res, str) and os.path.exists(res) and any(res.lower().endswith(e) for e in exts):
+        return res
+    if isinstance(res, dict):
+        for k in ("video", "image", "value", "path", "url"):
+            f = find_media(res.get(k), exts)
+            if f:
+                return f
+    if isinstance(res, (list, tuple)):
+        for x in res:
+            f = find_media(x, exts)
+            if f:
+                return f
+    return None
+
+def generate_hd_keyframe(pose_prompt, out_img):
+    if os.path.exists(out_img) and os.path.getsize(out_img) > 30000:
+        return "OK"
+    if not HF_TOKEN:
+        return "NO_TOKEN"
+
+    api = HfApi(token=HF_TOKEN)
+    spaces = ["black-forest-labs/FLUX.1-schnell", "multimodalart/FLUX.1-merged"]
+    try:
+        for s in api.list_spaces(search="FLUX.1-schnell", sort="likes", limit=8):
+            if s.id not in spaces:
+                spaces.append(s.id)
+    except Exception:
+        pass
+
+    quota_hit = False
+    for sid in spaces:
+        try:
+            if api.get_space_runtime(sid).stage != "RUNNING":
+                continue
+            c = Client(sid, verbose=False)
+            named = c.view_api(return_format="dict").get("named_endpoints", {})
+            for ep, info in named.items():
+                if "login" in ep.lower():
+                    continue
+                params = info.get("parameters", [])
+                p_prompt = next((p for p in params if "prompt" in p.get("parameter_name", "").lower()), None)
+                if not p_prompt:
+                    continue
+                kw = {}
+                for p in params:
+                    n = p.get("parameter_name", "")
+                    if n == p_prompt["parameter_name"]:
+                        kw[n] = pose_prompt
+                    elif n.lower() == "width":
+                        kw[n] = 1280
+                    elif n.lower() == "height":
+                        kw[n] = 720
+                    elif p.get("parameter_has_default"):
+                        kw[n] = p.get("parameter_default")
+                img = find_media(c.predict(api_name=ep, **kw), (".png", ".jpg", ".webp"))
+                if img and os.path.getsize(img) > 30000:
+                    shutil.copyfile(img, out_img)
+                    return "OK"
+        except Exception as e:
+            err = str(e).lower()
+            if "quota" in err or "exceeded" in err or "429" in err or "gpu" in err:
+                quota_hit = True
+            print(f"  [Aviso FLUX] {sid}: {str(e)[:80]}")
+    return "QUOTA" if quota_hit else "FAIL"
+def animate_hd_i2v(img_path, motion_prompt, out_mp4):
+    if os.path.exists(out_mp4) and os.path.getsize(out_mp4) > 80000:
+        return "OK"
+    if not HF_TOKEN:
+        return "NO_TOKEN"
+
+    api = HfApi(token=HF_TOKEN)
+    spaces = ["Wan-AI/Wan2.1", "Lightricks/ltx-video-distilled", "Lightricks/LTX-Video"]
+    try:
+        for q in ["Wan2.2", "Wan2.1", "LTX-Video", "image-to-video"]:
+            for s in api.list_spaces(search=q, sort="likes", limit=12):
+                if s.id not in spaces and not any(b in s.id.lower() for b in ("modelscope", "damo", "whisper", "upscale")):
+                    spaces.append(s.id)
+    except Exception:
+        pass
+
+    quota_hit = False
+    for sid in spaces:
+        try:
+            if api.get_space_runtime(sid).stage != "RUNNING":
+                continue
+            c = Client(sid, verbose=False)
+            named = c.view_api(return_format="dict").get("named_endpoints", {})
+            for ep, info in named.items():
+                if any(w in ep.lower() for w in ("login", "upscale", "t2v")):
+                    continue
+                params = info.get("parameters", [])
+                p_img = next((p for p in params if any(w in p.get("parameter_name", "").lower() for w in ("image", "img", "first_frame"))), None)
+                p_txt = next((p for p in params if "prompt" in p.get("parameter_name", "").lower() and "neg" not in p.get("parameter_name", "").lower()), None)
+                if not (p_img and p_txt):
+                    continue
+                kw = {}
+                for p in params:
+                    n = p.get("parameter_name", "")
+                    if n == p_img["parameter_name"]:
+                        kw[n] = handle_file(img_path)
+                    elif n == p_txt["parameter_name"]:
+                        kw[n] = motion_prompt
+                    elif "neg" in n.lower():
+                        kw[n] = "blurry, distorted hands, extra fingers, watermark, text, low quality, static"
+                    elif p.get("parameter_has_default"):
+                        kw[n] = p.get("parameter_default")
+                vid = find_media(c.predict(api_name=ep, **kw), (".mp4", ".webm"))
+                if vid and os.path.getsize(vid) > 80000:
+                    shutil.copyfile(vid, out_mp4)
+                    return "OK"
+        except Exception as e:
+            err = str(e).lower()
+            if "quota" in err or "exceeded" in err or "429" in err or "gpu" in err:
+                quota_hit = True
+            print(f"  [Aviso I2V] {sid}: {str(e)[:80]}")
+    return "QUOTA" if quota_hit else "FAIL"
+
+def fetch_pixabay_video(query, scene_seed):
     os.makedirs(PIXABAY_VID_CACHE, exist_ok=True)
-    for search_q in [query, "martial arts", "boxing", "karate", "self defense"]:
-        q_hash = "wiki_" + hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
+    if not PIXABAY_KEY:
+        return None
+    for search_q in [query, "martial arts", "boxing", "kickboxing", "training", "city night"]:
+        q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
         cached = sorted(glob.glob(f"{PIXABAY_VID_CACHE}/{q_hash}_*.mp4"))
         if cached:
             return cached[scene_seed % len(cached)]
         try:
-            params = {
-                "action": "query",
-                "generator": "search",
-                "gsrsearch": f"filetype:video {search_q}",
-                "gsrnamespace": "6",
-                "gsrlimit": "6",
-                "prop": "videoinfo",
-                "viprop": "url",
-                "format": "json"
-            }
-            resp = requests.get(WIKI_API_BASE, params=params, headers=WIKI_HEADERS, timeout=20)
-            pages = resp.json().get("query", {}).get("pages", {})
+            time.sleep(0.8)
+            params = {"key": PIXABAY_KEY, "q": search_q, "per_page": 6}
+            resp = requests.get(PIXABAY_VID_BASE, params=params, headers=API_HEADERS, timeout=20)
+            if resp.status_code != 200:
+                continue
             downloaded = []
-            for idx, page in enumerate(list(pages.values())[:4]):
-                vinfo_list = page.get("videoinfo", [])
-                vurl = vinfo_list.get("url", "") if vinfo_list else ""
-                if vurl.lower().endswith((".webm", ".mp4", ".ogv")):
-                    raw_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.raw"
-                    mp4_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.mp4"
-                    r = requests.get(vurl, headers=WIKI_HEADERS, timeout=45)
+            for idx, hit in enumerate(resp.json().get("hits", [])[:4]):
+                vids = hit.get("videos", {})
+                info = vids.get("medium") or vids.get("large") or vids.get("small")
+                if info and info.get("url"):
+                    local_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.mp4"
+                    r = requests.get(info["url"], headers=CDN_HEADERS, timeout=40)
                     if r.status_code == 200 and len(r.content) > 100000:
-                        with open(raw_path, "wb") as f:
-                            f.write(r.content)
-                        subprocess.run([
-                            "ffmpeg", "-y", "-i", raw_path, "-t", "25",
-                            "-c:v", "libx264", "-preset", "ultrafast", "-an", mp4_path
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        if os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 50000:
-                            downloaded.append(mp4_path)
-            if downloaded:
-                print(f"  [Wikimedia Video OK] {len(downloaded)} clips reales para '{search_q}'")
-                return downloaded[scene_seed % len(downloaded)]
-        except Exception as e:
-            print(f"  [Aviso Wikimedia] '{search_q}': {e}")
-    return None
-
-def fetch_pixabay_video(query, scene_seed):
-    os.makedirs(PIXABAY_VID_CACHE, exist_ok=True)
-    if PIXABAY_KEY:
-        for search_q in [query, "martial arts", "boxing", "kickboxing", "training", "city night"]:
-            q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
-            cached = sorted(glob.glob(f"{PIXABAY_VID_CACHE}/{q_hash}_*.mp4"))
-            if cached:
-                return cached[scene_seed % len(cached)]
-            try:
-                params = {"key": PIXABAY_KEY, "q": search_q, "per_page": 6}
-                resp = requests.get(PIXABAY_VID_BASE, params=params, headers=API_HEADERS, timeout=20)
-                if resp.status_code != 200:
-                    print(f"  [Aviso Pixabay] HTTP {resp.status_code}: {resp.text[:80]}")
-                    break
-                downloaded = []
-                for idx, hit in enumerate(resp.json().get("hits", [])[:4]):
-                    vids = hit.get("videos", {})
-                    info = vids.get("medium") or vids.get("large") or vids.get("small")
-                    if info and info.get("url"):
-                        local_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.mp4"
-                        r = requests.get(info["url"], headers=CDN_HEADERS, timeout=40)
-                        if r.status_code == 200 and len(r.content) > 100000:
-                            with open(local_path, "wb") as f:
-                                f.write(r.content)
-                            downloaded.append(local_path)
-                if downloaded:
-                    print(f"  [Pixabay Video OK] {len(downloaded)} clips reales para '{search_q}'")
-                    return downloaded[scene_seed % len(downloaded)]
-            except Exception as e:
-                print(f"  [Aviso Pixabay] Error con '{search_q}': {e}")
-    return fetch_wikimedia_video(query, scene_seed)
-def fetch_wikimedia_photo(query, out_img, scene_seed):
-    os.makedirs(PIXABAY_IMG_CACHE, exist_ok=True)
-    for search_q in [query, "martial arts", "boxing", "karate", "self defense"]:
-        q_hash = "wikiphoto_" + hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
-        cached_imgs = sorted(glob.glob(f"{PIXABAY_IMG_CACHE}/{q_hash}_*.jpg"))
-        if cached_imgs:
-            chosen = cached_imgs[scene_seed % len(cached_imgs)]
-            with open(chosen, "rb") as src, open(out_img, "wb") as dst:
-                dst.write(src.read())
-            return True
-        try:
-            params = {
-                "action": "query",
-                "generator": "search",
-                "gsrsearch": f"filetype:bitmap {search_q}",
-                "gsrnamespace": "6",
-                "gsrlimit": "6",
-                "prop": "imageinfo",
-                "iiprop": "url",
-                "iiurlwidth": "1280",
-                "format": "json"
-            }
-            resp = requests.get(WIKI_API_BASE, params=params, headers=WIKI_HEADERS, timeout=20)
-            pages = resp.json().get("query", {}).get("pages", {})
-            downloaded = []
-            for idx, page in enumerate(list(pages.values())[:4]):
-                iinfo = next(iter(page.get("imageinfo", [])), {})
-                img_url = iinfo.get("thumburl") or iinfo.get("url", "")
-                if img_url and any(ext in img_url.lower() for ext in [".jpg", ".jpeg", ".png"]):
-                    local_path = f"{PIXABAY_IMG_CACHE}/{q_hash}_{idx}.jpg"
-                    r = requests.get(img_url, headers=WIKI_HEADERS, timeout=30)
-                    if r.status_code == 200 and len(r.content) > 15000:
                         with open(local_path, "wb") as f:
                             f.write(r.content)
                         downloaded.append(local_path)
             if downloaded:
-                chosen = downloaded[scene_seed % len(downloaded)]
-                with open(chosen, "rb") as src, open(out_img, "wb") as dst:
-                    dst.write(src.read())
-                return True
+                return downloaded[scene_seed % len(downloaded)]
         except Exception:
             pass
-    return False
-
-def fetch_pixabay_photo_fallback(query, out_img, scene_seed):
-    os.makedirs(PIXABAY_IMG_CACHE, exist_ok=True)
-    if PIXABAY_KEY:
-        for search_q in [query, "martial arts", "boxing", "self defense", "street night"]:
-            q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
-            cached_imgs = sorted(glob.glob(f"{PIXABAY_IMG_CACHE}/{q_hash}_*.jpg"))
-            if cached_imgs:
-                chosen = cached_imgs[scene_seed % len(cached_imgs)]
-                with open(chosen, "rb") as src, open(out_img, "wb") as dst:
-                    dst.write(src.read())
-                return True
-            try:
-                time.sleep(0.8)
-                params = {
-                    "key": PIXABAY_KEY,
-                    "q": search_q,
-                    "image_type": "photo",
-                    "orientation": "horizontal",
-                    "per_page": 6
-                }
-                resp = requests.get(PIXABAY_IMG_BASE, params=params, headers=API_HEADERS, timeout=20)
-                if resp.status_code != 200:
-                    time.sleep(3)
-                    continue
-                downloaded = []
-                for idx, hit in enumerate(resp.json().get("hits", [])[:4]):
-                    img_url = hit.get("largeImageURL") or hit.get("webformatURL")
-                    if img_url:
-                        local_path = f"{PIXABAY_IMG_CACHE}/{q_hash}_{idx}.jpg"
-                        r = requests.get(img_url, headers=CDN_HEADERS, timeout=30)
-                        if r.status_code == 200 and len(r.content) > 15000:
-                            with open(local_path, "wb") as f:
-                                f.write(r.content)
-                            downloaded.append(local_path)
-                if downloaded:
-                    chosen = downloaded[scene_seed % len(downloaded)]
-                    with open(chosen, "rb") as src, open(out_img, "wb") as dst:
-                        dst.write(src.read())
-                    return True
-            except Exception:
-                pass
-    return fetch_wikimedia_photo(query, out_img, scene_seed)
-
-def get_scene_image(fallback_query, out_img, seed, broll_path=None):
-    if os.path.exists(out_img) and os.path.getsize(out_img) > 15000:
-        return True
-    if fetch_pixabay_photo_fallback(fallback_query, out_img, seed):
-        return True
-    if broll_path and os.path.exists(broll_path):
-        subprocess.run([
-            "ffmpeg", "-y", "-ss", "1", "-i", broll_path, "-vframes", "1", out_img
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if os.path.exists(out_img) and os.path.getsize(out_img) > 10000:
-            return True
-    return False
+    return None
 
 def render_all():
     script_files = sorted(glob.glob("build/scripts/*_script.json"))
@@ -231,62 +202,58 @@ def render_all():
         mod_id = os.path.basename(script_path).replace("_script.json", "")
         mod_dir = f"build/renders/{mod_id}"
         os.makedirs(mod_dir, exist_ok=True)
-        print(f"Produciendo versiones duales para: {script['module_title']}")
+        print(f"Produciendo capítulo: {script['module_title']}")
 
         for scene in script["scenes"]:
             s_num = scene["scene_number"]
             mp3_path = f"{mod_dir}/scene_{s_num:03d}.mp3"
             srt_path = f"{mod_dir}/scene_{s_num:03d}.srt"
-            img_path = f"{mod_dir}/scene_{s_num:03d}.jpg"
-            mp4_pixabay = f"{mod_dir}/scene_{s_num:03d}_pixabay.mp4"
-            mp4_ia = f"{mod_dir}/scene_{s_num:03d}_ia.mp4"
+            key_img = f"{mod_dir}/scene_{s_num:03d}_key.png"
+            raw_ai = f"{mod_dir}/scene_{s_num:03d}_raw_ai.mp4"
+            final_mp4 = f"{mod_dir}/scene_{s_num:03d}.mp4"
 
-            need_pixabay = not (os.path.exists(mp4_pixabay) and os.path.getsize(mp4_pixabay) > 50000)
-            need_ia = not (os.path.exists(mp4_ia) and os.path.getsize(mp4_ia) > 50000)
-
-            if not need_pixabay and not need_ia:
+            if os.path.exists(final_mp4) and os.path.getsize(final_mp4) > 50000:
                 continue
 
             if not (os.path.exists(mp3_path) and os.path.exists(srt_path)):
                 generate_tts_and_subs(scene["narration"], mp3_path, srt_path)
             duration = get_audio_duration(mp3_path) + 0.35
 
-            broll_path = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
-            if not broll_path or not os.path.exists(broll_path):
-                raise RuntimeError("No se pudo descargar ningún video de Pixabay ni Wikimedia.")
+            if scene.get("scene_type") == "ai_technique":
+                res_img = generate_hd_keyframe(scene.get("initial_pose_prompt", ""), key_img)
+                if res_img == "QUOTA":
+                    print("⏸️ Cupo diario de ZeroGPU alcanzado en FLUX. Guardando progreso para reanudar automáticamente...")
+                    return
+                if res_img == "OK":
+                    res_vid = animate_hd_i2v(key_img, scene.get("motion_action_prompt", ""), raw_ai)
+                    if res_vid == "QUOTA":
+                        print("⏸️ Cupo diario de ZeroGPU alcanzado en I2V. Guardando progreso para reanudar automáticamente...")
+                        return
+                    if res_vid == "OK":
+                        raw_dur = get_audio_duration(raw_ai)
+                        spd = max(1.0, duration / max(0.5, raw_dur))
+                        vf = f"setpts={spd:.2f}*PTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
+                        subprocess.run([
+                            "ffmpeg", "-y", "-i", raw_ai, "-i", mp3_path,
+                            "-t", f"{duration:.2f}", "-vf", vf,
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-b:a", "128k", "-shortest", final_mp4
+                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        print(f"  -> Escena {s_num:02d} [Técnica IA HD] lista ({duration:.1f}s)")
+                        continue
 
-            if need_pixabay:
-                vf = f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
-                subprocess.run([
-                    "ffmpeg", "-y", "-stream_loop", "-1", "-i", broll_path, "-i", mp3_path,
-                    "-t", f"{duration:.2f}", "-vf", vf,
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "128k", "-shortest", mp4_pixabay
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            broll = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
+            if not broll or not os.path.exists(broll):
+                raise RuntimeError("No se pudo obtener video real de respaldo en Pixabay.")
 
-            if need_ia:
-                has_img = get_scene_image(
-                    scene.get("pixabay_query", "martial arts"),
-                    img_path,
-                    s_num * 17,
-                    broll_path=broll_path
-                )
-                if not has_img:
-                    raise RuntimeError("No se pudo obtener imagen ni fotograma.")
-                frames = int(duration * 30)
-                if s_num % 2 == 0:
-                    zp = f"zoompan=z='min(zoom+0.0008,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps=30"
-                else:
-                    zp = f"zoompan=z='1.12':x='(iw-iw/zoom)*(on/{max(1, frames)})':y='ih/2-(ih/zoom/2)':d={frames}:s=1920x1080:fps=30"
-                vf = f"scale=1920:1080,{zp},subtitles={srt_path}:force_style='{sub_style}'"
-                subprocess.run([
-                    "ffmpeg", "-y", "-loop", "1", "-i", img_path, "-i", mp3_path,
-                    "-t", f"{duration:.2f}", "-vf", vf,
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "128k", "-shortest", mp4_ia
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            print(f"  -> Escena {s_num:02d} lista con video real e imagen ({duration:.1f}s)")
+            vf = f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
+            subprocess.run([
+                "ffmpeg", "-y", "-stream_loop", "-1", "-i", broll, "-i", mp3_path,
+                "-t", f"{duration:.2f}", "-vf", vf,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k", "-shortest", final_mp4
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"  -> Escena {s_num:02d} [Contexto HD] lista ({duration:.1f}s)")
 
 if __name__ == "__main__":
     render_all()
