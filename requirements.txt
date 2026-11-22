@@ -4,3 +4,5 @@ pymupdf==1.24.10
 edge-tts>=7.3.1
 pydantic==2.9.2
 requests>=2.31.0
+huggingface_hub>=0.28.0
+gradio_client>=1.5.0
