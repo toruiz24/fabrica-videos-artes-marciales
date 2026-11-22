@@ -1,35 +1,132 @@
-name: Prueba Clip IA Real (Hugging Face)
+import os
+import shutil
+import subprocess
+from huggingface_hub import HfApi
+from gradio_client import Client
 
-on:
-  workflow_dispatch:
+HF_TOKEN = os.environ["HF_TOKEN"]
+VOICE = "es-AR-TomasNeural"
 
-jobs:
-  test-hf:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+NARRATION = (
+    "Fijate bien en este golpe: lanzás la palma abierta directo hacia el mentón del agresor, "
+    "manteniendo el tronco completamente bloqueado a cero grados, sin rotar los hombros."
+)
 
-    steps:
-      - name: 1. Clonar repositorio
-        uses: actions/checkout@v4
+VIDEO_PROMPT = (
+    "Realistic martial arts instructional video, side profile medium shot of a self defense instructor "
+    "striking an attacker's chin with an open palm heel strike, keeping his torso and shoulders completely straight "
+    "and locked without twisting, crisp contact, realistic gym lighting, photorealistic, smooth natural motion"
+)
 
-      - name: 2. Configurar Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+CANDIDATE_SPACES = [
+    "Lightricks/ltx-video-distilled",
+    "Lightricks/LTX-Video",
+    "Wan-AI/Wan2.1",
+    "THUDM/CogVideoX-5B-Space",
+]
 
-      - name: 3. Instalar dependencias
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
-          pip install huggingface_hub>=0.28.0 edge-tts>=7.3.1
+def get_duration(path):
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
+    return float(subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout)
 
-      - name: 4. Generar clip de prueba con IA
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python src/test_hf_video.py
+def discover_running_spaces():
+    spaces = list(CANDIDATE_SPACES)
+    try:
+        api = HfApi(token=HF_TOKEN)
+        for s in api.list_spaces(search="text-to-video", sort="likes", limit=15):
+            if s.id not in spaces:
+                spaces.append(s.id)
+    except Exception:
+        pass
+    return spaces
 
-      - name: 5. Publicar video de prueba
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-palma-ia-real-mp4
-          path: output/test_palma_ia_real.mp4
+def extract_video_path(result):
+    if isinstance(result, str) and os.path.exists(result):
+        return result
+    if isinstance(result, dict):
+        for k in ("video", "value", "path", "url"):
+            val = result.get(k)
+            if isinstance(val, str) and os.path.exists(val):
+                return val
+            if isinstance(val, dict) and isinstance(val.get("path"), str) and os.path.exists(val["path"]):
+                return val["path"]
+    if isinstance(result, (list, tuple)):
+        for item in result:
+            found = extract_video_path(item)
+            if found:
+                return found
+    return None
+
+def generate_on_zerogpu(prompt, out_path):
+    for space_id in discover_running_spaces():
+        try:
+            print(f"Conectando a Space ZeroGPU: {space_id}...")
+            client = Client(space_id, hf_token=HF_TOKEN, verbose=False)
+            api_info = client.view_api(return_format="dict")
+            named = api_info.get("named_endpoints", {})
+            if not named:
+                continue
+
+            ep_name = next((k for k in named if "gen" in k.lower() or "txt" in k.lower() or "video" in k.lower()), next(iter(named)))
+            params = named[ep_name].get("parameters", [])
+
+            kwargs = {}
+            for p in params:
+                pname = p.get("parameter_name", "")
+                if "prompt" in pname.lower() and "neg" not in pname.lower():
+                    kwargs[pname] = prompt
+                elif "neg" in pname.lower():
+                    kwargs[pname] = "blurry, distorted hands, extra fingers, cartoon, 3d render, text, watermark"
+                elif p.get("parameter_has_default"):
+                    kwargs[pname] = p.get("parameter_default")
+
+            if not kwargs:
+                continue
+
+            print(f"  -> Ejecutando {ep_name} en {space_id}...")
+            res = client.predict(api_name=ep_name, **kwargs)
+            vid_file = extract_video_path(res)
+            if vid_file and os.path.getsize(vid_file) > 50000:
+                shutil.copyfile(vid_file, out_path)
+                print(f"  -> ¡Clip generado gratis con éxito en {space_id}!")
+                return True
+        except Exception as e:
+            print(f"  [Salto] {space_id}: {str(e)[:120]}")
+    return False
+
+def main():
+    os.makedirs("build/test_hf", exist_ok=True)
+    os.makedirs("output", exist_ok=True)
+
+    raw_vid = "build/test_hf/raw_ai.mp4"
+    mp3_path = "build/test_hf/voice.mp3"
+    srt_path = "build/test_hf/subs.srt"
+    final_mp4 = "output/test_palma_ia_real.mp4"
+
+    subprocess.run([
+        "edge-tts", "--voice", VOICE, "--rate=+3%",
+        "--text", NARRATION,
+        "--write-media", mp3_path,
+        "--write-subtitles", srt_path
+    ], check=True)
+    audio_dur = get_duration(mp3_path) + 0.4
+
+    if not generate_on_zerogpu(VIDEO_PROMPT, raw_vid):
+        raise RuntimeError("Ningún Space ZeroGPU estuvo disponible en este momento.")
+
+    raw_dur = get_duration(raw_vid)
+    speed_factor = max(1.0, audio_dur / max(0.5, raw_dur))
+    sub_style = "FontName=DejaVu Sans,FontSize=19,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=38"
+    vf = f"setpts={speed_factor:.2f}*PTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
+
+    subprocess.run([
+        "ffmpeg", "-y", "-i", raw_vid, "-i", mp3_path,
+        "-t", f"{audio_dur:.2f}", "-vf", vf,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-shortest", final_mp4
+    ], check=True)
+
+    print(f"¡Video listo en {final_mp4}!")
+
+if __name__ == "__main__":
+    main()
