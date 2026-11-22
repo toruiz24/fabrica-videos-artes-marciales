@@ -1,86 +1,79 @@
-import os
-import subprocess
-from huggingface_hub import InferenceClient
+import os, shutil, subprocess
+from huggingface_hub import HfApi
+from gradio_client import Client
 
 HF_TOKEN = os.environ["HF_TOKEN"]
 VOICE = "es-AR-TomasNeural"
-
 NARRATION = (
     "Fijate bien en este golpe: lanzás la palma abierta directo hacia el mentón del agresor, "
     "manteniendo el tronco completamente bloqueado a cero grados, sin rotar los hombros."
 )
-
-VIDEO_PROMPT = (
+PROMPT = (
     "Realistic martial arts instructional video, side profile medium shot of a self defense instructor "
-    "striking an attacker's chin with an open palm heel strike, keeping his torso and shoulders completely straight "
-    "and locked without twisting, crisp contact, realistic gym lighting, 4k photorealistic, smooth natural motion"
+    "striking an attacker's chin with an open palm heel strike, torso completely straight and locked "
+    "without twisting, crisp contact, realistic gym lighting, photorealistic, smooth motion"
 )
 
-MODELS = [
-    "Wan-AI/Wan2.1-T2V-1.3B",
-    "Lightricks/LTX-Video",
-    "Wan-AI/Wan2.1-T2V-14B",
-]
+def get_dur(p):
+    out = subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", p])
+    return float(out)
 
-def get_duration(path):
-    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path]
-    return float(subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout)
+def find_video(res):
+    if isinstance(res, str) and os.path.exists(res): return res
+    if isinstance(res, dict):
+        for k in ("video", "value", "path", "url"):
+            v = res.get(k)
+            if isinstance(v, str) and os.path.exists(v): return v
+            if isinstance(v, dict) and os.path.exists(str(v.get("path", ""))): return v["path"]
+    if isinstance(res, (list, tuple)):
+        for x in res:
+            f = find_video(x)
+            if f: return f
+    return None
+
+def run_zerogpu(out_mp4):
+    spaces = ["Lightricks/ltx-video-distilled", "Lightricks/LTX-Video", "Wan-AI/Wan2.1", "THUDM/CogVideoX-5B-Space"]
+    try:
+        for s in HfApi(token=HF_TOKEN).list_spaces(search="text-to-video", sort="likes", limit=12):
+            if s.id not in spaces: spaces.append(s.id)
+    except Exception:
+        pass
+
+    for sid in spaces:
+        try:
+            print(f"Conectando a ZeroGPU: {sid}...")
+            c = Client(sid, hf_token=HF_TOKEN, verbose=False)
+            named = c.view_api(return_format="dict").get("named_endpoints", {})
+            if not named: continue
+            ep = next((k for k in named if any(w in k.lower() for w in ("gen", "txt", "video"))), next(iter(named)))
+            kw = {}
+            for p in named[ep].get("parameters", []):
+                n = p.get("parameter_name", "")
+                if "prompt" in n.lower() and "neg" not in n.lower(): kw[n] = PROMPT
+                elif "neg" in n.lower(): kw[n] = "blurry, distorted hands, cartoon, 3d, text, watermark"
+                elif p.get("parameter_has_default"): kw[n] = p.get("parameter_default")
+            if not kw: continue
+            vid = find_video(c.predict(api_name=ep, **kw))
+            if vid and os.path.getsize(vid) > 50000:
+                shutil.copyfile(vid, out_mp4)
+                print(f"  -> ¡Clip generado gratis en {sid}!")
+                return True
+        except Exception as e:
+            print(f"  [Salto] {sid}: {str(e)[:100]}")
+    return False
 
 def main():
     os.makedirs("build/test_hf", exist_ok=True)
     os.makedirs("output", exist_ok=True)
-
-    raw_vid = "build/test_hf/raw_ai.mp4"
-    mp3_path = "build/test_hf/voice.mp3"
-    srt_path = "build/test_hf/subs.srt"
-    final_mp4 = "output/test_palma_ia_real.mp4"
-
-    # 1. Generar voz argentina y subtítulos
-    subprocess.run([
-        "edge-tts", "--voice", VOICE, "--rate=+3%",
-        "--text", NARRATION,
-        "--write-media", mp3_path,
-        "--write-subtitles", srt_path
-    ], check=True)
-    audio_dur = get_duration(mp3_path) + 0.4
-
-    # 2. Generar clip con IA en modo ahorro (1.3B / LTX)
-    client = InferenceClient(token=HF_TOKEN)
-    video_bytes = None
-    for model_id in MODELS:
-        try:
-            print(f"Generando clip con modelo: {model_id}...")
-            video_bytes = client.text_to_video(
-                VIDEO_PROMPT,
-                model=model_id,
-                negative_prompt="blurry, distorted hands, extra fingers, slow motion, cartoon, 3d render, text, watermark"
-            )
-            if video_bytes and len(video_bytes) > 50000:
-                print(f"  -> Clip generado con éxito usando {model_id}")
-                break
-        except Exception as e:
-            print(f"  [Salto] {model_id}: {str(e)[:120]}")
-
-    if not video_bytes:
-        raise RuntimeError("No se pudo generar el clip con ninguno de los modelos.")
-
-    with open(raw_vid, "wb") as f:
-        f.write(video_bytes)
-
-    # 3. Escalar a Full HD (1920x1080), ajustar velocidad didáctica y pegar subtítulos
-    raw_dur = get_duration(raw_vid)
-    speed_factor = max(1.0, audio_dur / max(0.5, raw_dur))
-    sub_style = "FontName=DejaVu Sans,FontSize=19,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=38"
-    vf = f"setpts={speed_factor:.2f}*PTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
-
-    subprocess.run([
-        "ffmpeg", "-y", "-i", raw_vid, "-i", mp3_path,
-        "-t", f"{audio_dur:.2f}", "-vf", vf,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k", "-shortest", final_mp4
-    ], check=True)
-
-    print(f"¡Video listo en {final_mp4}!")
+    raw, mp3, srt, out = "build/test_hf/raw.mp4", "build/test_hf/v.mp3", "build/test_hf/s.srt", "output/test_palma_ia_real.mp4"
+    subprocess.run(["edge-tts", "--voice", VOICE, "--rate=+3%", "--text", NARRATION, "--write-media", mp3, "--write-subtitles", srt], check=True)
+    adur = get_dur(mp3) + 0.4
+    if not run_zerogpu(raw): raise RuntimeError("Ningún Space ZeroGPU disponible ahora.")
+    spd = max(1.0, adur / max(0.5, get_dur(raw)))
+    st = "FontName=DejaVu Sans,FontSize=19,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=38"
+    vf = f"setpts={spd:.2f}*PTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt}:force_style='{st}'"
+    subprocess.run(["ffmpeg", "-y", "-i", raw, "-i", mp3, "-t", f"{adur:.2f}", "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-shortest", out], check=True)
+    print(f"¡Listo: {out}!")
 
 if __name__ == "__main__":
     main()
