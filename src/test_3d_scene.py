@@ -1,5 +1,4 @@
 import os
-import glob
 import asyncio
 import subprocess
 from playwright.async_api import async_playwright
@@ -24,7 +23,6 @@ async def run_test():
     srt_path = "build/test_3d/subs.srt"
     final_mp4 = "output/test_palma_abierta_3d.mp4"
 
-    # 1. Generar locución argentina y subtítulos
     subprocess.run([
         "edge-tts", "--voice", VOICE, "--rate=+4%",
         "--text", NARRATION,
@@ -37,12 +35,19 @@ async def run_test():
     total_frames = int(duration * fps)
     print(f"Renderizando {total_frames} cuadros 3D ({duration:.1f}s)...")
 
-    # 2. Capturar cuadros 3D determinísticos (mucho más rápido y fluido que grabar en tiempo real)
     html_uri = "file://" + os.path.abspath("src/mannequin_3d.html")
     async with async_playwright() as p:
-        browser = await p.chromium.launch(args=["--use-gl=angle", "--use-angle=swiftshader"])
+        browser = await p.chromium.launch(args=[
+            "--enable-webgl",
+            "--ignore-gpu-blocklist",
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader"
+        ])
         page = await browser.new_page(viewport={"width": 1920, "height": 1080})
+        page.on("pageerror", lambda err: print(f"[Error JS]: {err}"))
         await page.goto(html_uri)
+        await page.wait_for_function("typeof window.renderFrame === 'function'")
 
         for frame in range(total_frames):
             ratio = frame / max(1, total_frames - 1)
@@ -51,7 +56,6 @@ async def run_test():
 
         await browser.close()
 
-    # 3. Compilar video MP4 final con subtítulos
     sub_style = "FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=35"
     subprocess.run([
         "ffmpeg", "-y", "-framerate", str(fps),
