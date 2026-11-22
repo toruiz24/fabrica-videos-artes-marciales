@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<style>
+  body { margin: 0; overflow: hidden; background: #0b0f17; font-family: 'Segoe UI', sans-serif; }
+  #hud {
+    position: absolute; top: 32px; left: 40px; right: 40px;
+    display: flex; justify-content: space-between; align-items: center; pointer-events: none;
+  }
+  .tag {
+    background: rgba(15, 23, 42, 0.85); border-left: 5px solid #f59e0b;
+    color: #f8fafc; padding: 12px 22px; border-radius: 6px; font-size: 22px; font-weight: 700;
+  }
+  .mode {
+    background: rgba(245, 158, 11, 0.9); color: #090d16;
+    padding: 8px 18px; border-radius: 6px; font-size: 18px; font-weight: 800; text-transform: uppercase;
+  }
+</style>
+<script src="three.min.js"></script>
+</head>
+<body>
+<div id="hud">
+  <div class="tag" id="hud-title">Golpe de Palma Abierta (Tronco Bloqueado)</div>
+  <div class="mode" id="hud-speed">Velocidad Real</div>
+</div>
+<script>
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0f17);
+scene.fog = new THREE.Fog(0x0b0f17, 6, 16);
+
+const camera = new THREE.PerspectiveCamera(42, 1920 / 1080, 0.1, 50);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(1920, 1080);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// Iluminación de estudio
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+keyLight.position.set(3, 6, 4);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+scene.add(keyLight);
+
+const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.7);
+rimLight.position.set(-4, 4, -3);
+scene.add(rimLight);
+
+// Piso táctico con grilla
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(20, 20),
+  new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.8 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+const grid = new THREE.GridHelper(16, 32, 0x334155, 0x1e293b);
+grid.position.y = 0.002;
+scene.add(grid);
+
+function createLimb(rTop, rBot, len, mat) {
+  const geo = new THREE.CylinderGeometry(rTop, rBot, len, 18);
+  geo.translate(0, -len / 2, 0);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  return mesh;
+}
+
+function buildFighter(primaryHex, accentHex) {
+  const matBody = new THREE.MeshStandardMaterial({ color: primaryHex, roughness: 0.45, metalness: 0.15 });
+  const matJoint = new THREE.MeshStandardMaterial({ color: accentHex, roughness: 0.35 });
+  const matSkin = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.5 });
+
+  const root = new THREE.Group();
+  const pelvis = new THREE.Group();
+  pelvis.position.y = 0.98;
+  root.add(pelvis);
+
+  const hipMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.14, 0.18, 18), matBody);
+  hipMesh.castShadow = true;
+  pelvis.add(hipMesh);
+
+  // Torso articulado
+  const torso = new THREE.Group();
+  torso.position.y = 0.09;
+  pelvis.add(torso);
+  const chest = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.15, 0.46, 20), matBody);
+  chest.position.y = 0.23;
+  chest.castShadow = true;
+  torso.add(chest);
+
+  // Cabeza
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.115, 20, 20), matSkin);
+  head.scale.set(0.92, 1.12, 1.0);
+  head.position.set(0, 0.60, 0.02);
+  head.castShadow = true;
+  torso.add(head);
+
+  function makeArm(side) {
+    const s = side === 'R' ? -1 : 1;
+    const shoulder = new THREE.Group();
+    shoulder.position.set(s * 0.23, 0.43, 0);
+    torso.add(shoulder);
+    shoulder.add(new THREE.Mesh(new THREE.SphereGeometry(0.055, 14, 14), matJoint));
+
+    const upper = createLimb(0.052, 0.044, 0.28, matBody);
+    shoulder.add(upper);
+
+    const elbow = new THREE.Group();
+    elbow.position.y = -0.28;
+    upper.add(elbow);
+    elbow.add(new THREE.Mesh(new THREE.SphereGeometry(0.044, 14, 14), matJoint));
+
+    const forearm = createLimb(0.044, 0.034, 0.26, matSkin);
+    elbow.add(forearm);
+
+    const wrist = new THREE.Group();
+    wrist.position.y = -0.26;
+    forearm.add(wrist);
+
+    // Mano (palma abierta visible con dedos extendidos)
+    const palm = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.13, 0.085), matSkin);
+    palm.position.y = -0.065;
+    palm.castShadow = true;
+    wrist.add(palm);
+
+    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.06, 0.025), matSkin);
+    thumb.position.set(0, -0.04, 0.052);
+    thumb.rotation.x = 0.5;
+    wrist.add(thumb);
+
+    return { shoulder, elbow, wrist, palm };
+  }
+
+  function makeLeg(side) {
+    const s = side === 'R' ? -1 : 1;
+    const hip = new THREE.Group();
+    hip.position.set(s * 0.10, -0.05, 0);
+    pelvis.add(hip);
+
+    const thigh = createLimb(0.078, 0.06, 0.44, matBody);
+    hip.add(thigh);
+
+    const knee = new THREE.Group();
+    knee.position.y = -0.44;
+    thigh.add(knee);
+    knee.add(new THREE.Mesh(new THREE.SphereGeometry(0.055, 14, 14), matJoint));
+
+    const shin = createLimb(0.058, 0.042, 0.43, matBody);
+    knee.add(shin);
+
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.05, 0.22), matJoint);
+    foot.position.set(0, -0.45, 0.05);
+    foot.castShadow = true;
+    shin.add(foot);
+
+    return { hip, knee };
+  }
+
+  return {
+    root, pelvis, torso, head,
+    armL: makeArm('L'), armR: makeArm('R'),
+    legL: makeLeg('L'), legR: makeLeg('R')
+  };
+}
+
+const defender = buildFighter(0x0284c7, 0x38bdf8);
+defender.root.position.set(0, 0, -0.62);
+scene.add(defender.root);
+
+const aggressor = buildFighter(0x334155, 0xef4444);
+aggressor.root.position.set(0, 0, 0.62);
+aggressor.root.rotation.y = Math.PI;
+scene.add(aggressor.root);
+
+function applyGuard(f) {
+  f.pelvis.rotation.y = -0.25;
+  f.torso.rotation.y = 0.0; // Tronco sin torsión
+  f.legL.hip.rotation.x = -0.28; f.legL.knee.rotation.x = 0.42;
+  f.legR.hip.rotation.x = 0.25;  f.legR.knee.rotation.x = 0.35;
+
+  // Guardia alta
+  f.armL.shoulder.rotation.set(-0.65, 0, 0.22);
+  f.armL.elbow.rotation.set(-1.85, 0, 0);
+  f.armL.wrist.rotation.set(0, 0, 0);
+
+  f.armR.shoulder.rotation.set(-0.55, 0, -0.22);
+  f.armR.elbow.rotation.set(-1.95, 0, 0);
+  f.armR.wrist.rotation.set(0, 0, 0);
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+window.renderFrame = function(ratio) {
+  applyGuard(defender);
+  applyGuard(aggressor);
+
+  // Fase 1 (0.0 -> 0.48): Velocidad real | Fase 2 (0.48 -> 1.0): Cámara lenta + ángulo lateral
+  let strikePhase = 0;
+  let isSlowMo = ratio >= 0.48;
+  document.getElementById('hud-speed').innerText = isSlowMo ? "Cámara Lenta · Vista Lateral" : "Ejecución Técnica";
+  document.getElementById('hud-speed').style.background = isSlowMo ? "#38bdf8" : "#f59e0b";
+
+  if (!isSlowMo) {
+    const local = ratio / 0.48;
+    if (local > 0.2 && local < 0.5) strikePhase = (local - 0.2) / 0.3;
+    else if (local >= 0.5 && local < 0.75) strikePhase = 1.0;
+    else if (local >= 0.75) strikePhase = Math.max(0, 1 - (local - 0.75) / 0.25);
+  } else {
+    const local = (ratio - 0.48) / 0.52;
+    if (local > 0.15 && local < 0.65) strikePhase = (local - 0.15) / 0.50;
+    else if (local >= 0.65 && local < 0.85) strikePhase = 1.0;
+    else if (local >= 0.85) strikePhase = Math.max(0, 1 - (local - 0.85) / 0.15);
+  }
+
+  // Easing suave
+  const ease = strikePhase * strikePhase * (3 - 2 * strikePhase);
+
+  // Golpe recto de palma abierta con brazo adelantado (izquierdo) SIN torcer el tronco
+  defender.torso.rotation.y = 0.0; // Bloqueado estrictamente a 0°
+  defender.root.position.z = lerp(-0.62, -0.46, ease);
+  defender.armL.shoulder.rotation.x = lerp(-0.65, -1.52, ease);
+  defender.armL.shoulder.rotation.z = lerp(0.22, 0.04, ease);
+  defender.armL.elbow.rotation.x = lerp(-1.85, -0.08, ease);
+  // Extensión de muñeca para golpear con el talón de la palma abierta
+  defender.armL.wrist.rotation.x = lerp(0, 1.35, ease);
+
+  // Reacción de impacto en el agresor
+  const impact = Math.max(0, (ease - 0.75) / 0.25);
+  aggressor.head.rotation.x = -0.35 * impact;
+  aggressor.torso.rotation.x = -0.15 * impact;
+
+  // Movimiento de cámara: de plano 3/4 frontal a plano lateral puro para verificar el tronco bloqueado
+  const camAngle = isSlowMo ? lerp(0.55, 1.52, Math.min(1, (ratio - 0.48) * 3)) : 0.55;
+  const dist = isSlowMo ? 2.45 : 2.75;
+  camera.position.set(Math.sin(camAngle) * dist, 1.48, Math.cos(camAngle) * dist);
+  camera.lookAt(0, 1.25, 0);
+
+  renderer.render(scene, camera);
+};
+</script>
+</body>
+</html>
