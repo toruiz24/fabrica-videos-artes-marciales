@@ -24,7 +24,8 @@ jobs:
           pip install edge-tts playwright
           playwright install chromium
           playwright install-deps chromium
-          curl -fSL https://cloudflare.com -o src/three.min.js
+          npm install --no-save three@0.147.0
+          cp node_modules/three/build/three.min.js src/three.min.js
 
       - name: 4. Renderizar escena 3D de prueba
         run: python src/test_3d_scene.py
