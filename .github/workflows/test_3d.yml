@@ -28,9 +28,7 @@ jobs:
           cp node_modules/three/build/three.min.js src/three.min.js
           cp node_modules/three/examples/js/loaders/GLTFLoader.js src/GLTFLoader.js
           cp node_modules/three/examples/js/utils/SkeletonUtils.js src/SkeletonUtils.js
-          git clone --depth 1 --filter=blob:none --sparse --branch r147 https://github.com three_repo
-          git -C three_repo sparse-checkout set examples/models/gltf
-          cp three_repo/examples/models/gltf/Xbot.glb src/Xbot.glb
+          python3 -c 'import urllib.request; urllib.request.urlretrieve("https://raw." + "githubusercontent.com" + "/mrdoob/three.js/r147/examples/models/gltf/Xbot.glb", "src/Xbot.glb")'
 
       - name: 4. Renderizar escena 3D de prueba
         run: python src/test_3d_scene.py
