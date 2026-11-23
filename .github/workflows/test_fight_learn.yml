@@ -20,7 +20,7 @@ jobs:
       - name: 3. Instalar dependencias y modelo humano 3D
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          sudo apt-get install -y ffmpeg fonts-dejavu-core curl
           pip install edge-tts playwright
           playwright install chromium
           playwright install-deps chromium
@@ -28,7 +28,7 @@ jobs:
           cp node_modules/three/build/three.min.js src/three.min.js
           cp node_modules/three/examples/js/loaders/GLTFLoader.js src/GLTFLoader.js
           cp node_modules/three/examples/js/utils/SkeletonUtils.js src/SkeletonUtils.js
-          cp node_modules/three/examples/models/gltf/Xbot.glb src/Xbot.glb
+          curl -fSL https://githubusercontent.com -o src/Xbot.glb
 
       - name: 4. Renderizar escena de prueba Fight Learn
         run: python src/test_fight_learn.py
