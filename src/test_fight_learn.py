@@ -7,9 +7,9 @@ from playwright.async_api import async_playwright
 
 VOICE = "es-AR-TomasNeural"
 NARRATION = (
-    "Observá la mecánica completa del golpe directo con paso adelante. "
-    "El impulso nace desde el apoyo del pie trasero, viaja por la cadera y sale proyectado en línea recta sin bajar la guardia. "
-    "Mirá ahora la repetición en cámara lenta para apreciar la alineación del cuerpo."
+    "Observá la mecánica exacta del golpe directo con paso adelante. "
+    "El impulso nace desde el apoyo trasero, avanza en línea recta hacia el frente sin bajar la guardia y recoge rápido. "
+    "Mirá ahora la repetición en cámara lenta para apreciar la transferencia de peso."
 )
 
 def has_real_audio(mp3_path):
@@ -32,15 +32,22 @@ def generate_verified_tts(text, out_mp3, out_srt):
             return
     raise RuntimeError("No se pudo generar voz con volumen válido.")
 
-def download_martial_mocap(out_glb):
+def download_exact_strike_mocap(out_glb):
     api = HfApi()
     files = api.list_repo_files("codepawl/cmu-mocap-glb", repo_type="dataset")
-    glb_files = [f for f in files if f.lower().endswith(".glb")]
-    # Priorizar Sujeto #135 (Artes Marciales: Oiduki / Empi / Patadas) o Sujeto #14 (Boxeo)
-    target = next((f for f in glb_files if "135_09" in f or "135_02" in f), None)
+    glb_files = sorted([f for f in files if f.lower().endswith(".glb")])
+
+    # 135_02 y 135_03 = Oiduki (golpe recto frontal con paso); 13_17 / 14_01 = golpes de boxeo
+    preferred = ["135_02", "135_03", "13_17", "14_01"]
+    target = None
+    for code in preferred:
+        target = next((f for f in glb_files if code in f), None)
+        if target:
+            break
     if not target:
-        target = next((f for f in glb_files if "135_" in f or "14_01" in f or "13_17" in f), glb_files[0])
-    print(f"Descargando captura de movimiento real: {target}")
+        target = glb_files[0]
+
+    print(f"Descargando golpe exacto MoCap: {target}")
     local = hf_hub_download(repo_id="codepawl/cmu-mocap-glb", filename=target, repo_type="dataset")
     with open(local, "rb") as src, open(out_glb, "wb") as dst:
         dst.write(src.read())
@@ -54,7 +61,7 @@ async def run_pilot():
     glb_path = "src/mocap_action.glb"
     out_mp4 = "output/test_fight_learn.mp4"
 
-    download_martial_mocap(glb_path)
+    download_exact_strike_mocap(glb_path)
     generate_verified_tts(NARRATION, mp3_path, srt_path)
 
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp3_path]
@@ -90,7 +97,7 @@ async def run_pilot():
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-shortest", out_mp4
     ], check=True)
-    print(f"¡Prueba Fight Learn lista en {out_mp4}!")
+    print(f"¡Prueba Fight Learn ajustada lista en {out_mp4}!")
 
 if __name__ == "__main__":
     asyncio.run(run_pilot())
