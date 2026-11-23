@@ -21,15 +21,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
-          pip install edge-tts playwright huggingface_hub
+          pip install edge-tts playwright
           playwright install chromium
           playwright install-deps chromium
           npm install --no-save three@0.147.0
           cp node_modules/three/build/three.min.js src/three.min.js
           cp node_modules/three/examples/js/loaders/GLTFLoader.js src/GLTFLoader.js
           cp node_modules/three/examples/js/utils/SkeletonUtils.js src/SkeletonUtils.js
-          python -c "from huggingface_hub import hf_hub_download; import shutil; shutil.copy(hf_hub_download('mrdoob/three.js', 'examples/models/gltf/Xbot.glb'), 'src/Xbot.glb')" || python -c "from huggingface_hub import hf_hub_download; import shutil; shutil.copy(hf_hub_download('codepawl/cmu-mocap-glb', '135_02.glb', repo_type='dataset'), 'src/Xbot.glb')"
-
 
       - name: 4. Renderizar escena de prueba Fight Learn
         run: python src/test_fight_learn.py
