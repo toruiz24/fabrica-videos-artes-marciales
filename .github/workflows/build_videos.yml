@@ -35,6 +35,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
           pip install -r requirements.txt
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
 
       - name: 5. Dividir libro por capitulos reales
         run: python src/1_extract_chapters.py
