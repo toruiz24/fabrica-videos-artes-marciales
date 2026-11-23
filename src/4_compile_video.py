@@ -16,9 +16,9 @@ def compile_all():
             continue
 
         mod_id = os.path.basename(mod_dir)
-        scenes = sorted(glob.glob(f"{mod_dir}/scene_[0-9][0-9][0-9].mp4"))
+        scenes = sorted(glob.glob(f"{mod_dir}/scene_[0-9][0-9][0-9]_v5.mp4"))
         if not scenes:
-            print(f"Sin escenas renderizadas para {mod_id}, saltando...")
+            print(f"Sin escenas nuevas para {mod_id}, saltando...")
             continue
 
         slug = mod_id
