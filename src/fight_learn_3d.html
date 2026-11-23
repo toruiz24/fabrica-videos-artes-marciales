@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #070b14; overflow: hidden; font-family: 'DejaVu Sans', 'Segoe UI', sans-serif; }
+  #hud {
+    position: absolute; top: 36px; left: 48px; right: 48px;
+    display: flex; justify-content: space-between; align-items: center; pointer-events: none;
+  }
+  .card {
+    background: rgba(15, 23, 42, 0.88); border-left: 6px solid #f59e0b;
+    padding: 16px 26px; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  }
+  .label { color: #f59e0b; font-size: 16px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; }
+  .title { color: #f8fafc; font-size: 30px; font-weight: 800; margin-top: 4px; }
+  .sub { color: #94a3b8; font-size: 18px; margin-top: 4px; }
+  .badge {
+    background: #f59e0b; color: #070b14; padding: 12px 24px;
+    border-radius: 10px; font-size: 20px; font-weight: 900; letter-spacing: 1px;
+  }
+  #bar-wrap {
+    position: absolute; bottom: 110px; left: 48px; right: 48px; height: 8px;
+    background: rgba(255,255,255,0.12); border-radius: 4px; overflow: hidden;
+  }
+  #bar-fill { width: 0%; height: 100%; background: #38bdf8; }
+</style>
+<script src="three.min.js"></script>
+<script src="GLTFLoader.js"></script>
+</head>
+<body>
+<div id="hud">
+  <div class="card">
+    <div class="label" id="hud-tag">TÉCNICA DE IMPACTO · NIVEL 1</div>
+    <div class="title" id="hud-title">GOLPE DIRECTO CON AVANCE</div>
+    <div class="sub" id="hud-sub">Transferencia de peso · Guardia alta · Retracción rápida</div>
+  </div>
+  <div class="badge" id="hud-mode">VELOCIDAD REAL · 1.0x</div>
+</div>
+<div id="bar-wrap"><div id="bar-fill"></div></div>
+
+<script>
+window.sceneReady = false;
+let mixer = null, clipDuration = 2.0, modelRoot = null;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x070b14);
+scene.fog = new THREE.Fog(0x070b14, 5, 14);
+
+const camera = new THREE.PerspectiveCamera(40, 1920 / 1080, 0.1, 50);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(1920, 1080);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.25;
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+const keyLight = new THREE.DirectionalLight(0xfff7ed, 1.5);
+keyLight.position.set(3, 6, 4);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+scene.add(keyLight);
+
+const rimLight = new THREE.DirectionalLight(0x38bdf8, 1.1);
+rimLight.position.set(-4, 4, -3);
+scene.add(rimLight);
+
+// Tatami oscuro estilo Fight Learn con aro de enfoque
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(6, 64),
+  new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.8 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(1.05, 1.12, 64),
+  new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })
+);
+ring.rotation.x = -Math.PI / 2;
+ring.position.y = 0.003;
+scene.add(ring);
+
+const grid = new THREE.GridHelper(12, 24, 0x1e293b, 0x111827);
+grid.position.y = 0.001;
+scene.add(grid);
+
+new THREE.GLTFLoader().load('mocap_action.glb', gltf => {
+  modelRoot = gltf.scene;
+
+  // Normalizar escala y centrar en el tatami
+  const box = new THREE.Box3().setFromObject(modelRoot);
+  const size = box.getSize(new THREE.Vector3());
+  const scale = 1.75 / Math.max(0.01, size.y);
+  modelRoot.scale.setScalar(scale);
+
+  const scaledBox = new THREE.Box3().setFromObject(modelRoot);
+  const center = scaledBox.getCenter(new THREE.Vector3());
+  modelRoot.position.set(-center.x, -scaledBox.min.y, -center.z);
+
+  modelRoot.traverse(obj => {
+    if (obj.isMesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+      obj.material = new THREE.MeshStandardMaterial({
+        color: 0xe2e8f0,
+        roughness: 0.38,
+        metalness: 0.22
+      });
+    }
+  });
+
+  scene.add(modelRoot);
+
+  if (gltf.animations && gltf.animations.length > 0) {
+    mixer = new THREE.AnimationMixer(modelRoot);
+    const action = mixer.clipAction(gltf.animations[0]);
+    action.play();
+    clipDuration = Math.max(0.5, gltf.animations[0].duration);
+  }
+  window.sceneReady = true;
+});
+
+window.renderFrame = function(ratio) {
+  if (!window.sceneReady || !mixer) return;
+
+  const isSlowMo = ratio >= 0.45;
+  const badge = document.getElementById('hud-mode');
+  badge.innerText = isSlowMo ? 'CÁMARA LENTA · 0.35x' : 'VELOCIDAD REAL · 1.0x';
+  badge.style.background = isSlowMo ? '#38bdf8' : '#f59e0b';
+  document.getElementById('bar-fill').style.width = `${Math.round(ratio * 100)}%`;
+
+  // Tiempo de animación: 2 pasadas en velocidad real + 1 pasada lenta detallada
+  let animProgress = 0;
+  if (!isSlowMo) {
+    animProgress = ((ratio / 0.45) * 2.0) % 1.0;
+  } else {
+    animProgress = (ratio - 0.45) / 0.55;
+  }
+
+  mixer.setTime(animProgress * clipDuration);
+
+  // Mantener al luchador centrado sobre el tatami mientras avanza
+  const box = new THREE.Box3().setFromObject(modelRoot);
+  const c = box.getCenter(new THREE.Vector3());
+
+  // Órbita de cámara suave en cámara lenta para ver todo el cuerpo en 3D
+  const angle = isSlowMo ? 0.55 + ((ratio - 0.45) / 0.55) * 1.45 : 0.55;
+  const dist = isSlowMo ? 2.55 : 2.85;
+  camera.position.set(c.x + Math.sin(angle) * dist, 1.35, c.z + Math.cos(angle) * dist);
+  camera.lookAt(c.x, 1.05, c.z);
+
+  renderer.render(scene, camera);
+};
+</script>
+</body>
+</html>
