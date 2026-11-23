@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import subprocess
+import urllib.request
 from playwright.async_api import async_playwright
 
 VOICE = "es-AR-TomasNeural"
@@ -11,6 +12,23 @@ NARRATION = (
     "manteniendo el tronco completamente bloqueado a cero grados, sin rotar los hombros. "
     "Observá ahora la repetición en cámara lenta desde el perfil."
 )
+
+def ensure_xbot_model(out_glb):
+    if os.path.exists(out_glb) and os.path.getsize(out_glb) > 500000:
+        return
+    mirrors = [
+        "https://threejs.org",
+        "https://githubusercontent.com"
+    ]
+    for url in mirrors:
+        try:
+            print(f"Descargando modelo humano 3D desde {url}...")
+            urllib.request.urlretrieve(url, out_glb)
+            if os.path.exists(out_glb) and os.path.getsize(out_glb) > 500000:
+                return
+        except Exception as e:
+            print(f"Fallo espejo {url}: {e}")
+    raise RuntimeError("No se pudo descargar Xbot.glb desde los servidores de Three.js.")
 
 def has_real_audio(mp3_path):
     if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) < 2000:
@@ -40,6 +58,7 @@ async def run_pilot():
     srt_path = "build/pilot_fl/subs.srt"
     out_mp4 = "output/test_fight_learn.mp4"
 
+    ensure_xbot_model("src/Xbot.glb")
     generate_verified_tts(NARRATION, mp3_path, srt_path)
 
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp3_path]
