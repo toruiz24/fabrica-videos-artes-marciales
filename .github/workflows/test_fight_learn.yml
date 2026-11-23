@@ -1,0 +1,38 @@
+name: Prueba Piloto Fight Learn 3D
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-fight-learn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 1. Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. Instalar dependencias y motor 3D
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install edge-tts playwright huggingface_hub
+          playwright install chromium
+          playwright install-deps chromium
+          npm install --no-save three@0.147.0
+          cp node_modules/three/build/three.min.js src/three.min.js
+          cp node_modules/three/examples/js/loaders/GLTFLoader.js src/GLTFLoader.js
+
+      - name: 4. Renderizar escena de prueba Fight Learn
+        run: python src/test_fight_learn.py
+
+      - name: 5. Publicar video de prueba
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-fight-learn-3d
+          path: output/test_fight_learn.mp4
