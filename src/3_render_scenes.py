@@ -106,6 +106,7 @@ def generate_hd_keyframe(pose_prompt, out_img):
                 quota_hit = True
             print(f"  [Aviso FLUX] {sid}: {str(e)[:80]}")
     return "QUOTA" if quota_hit else "FAIL"
+
 def animate_hd_i2v(img_path, motion_prompt, out_mp4):
     if os.path.exists(out_mp4) and os.path.getsize(out_mp4) > 80000:
         return "OK"
@@ -113,10 +114,15 @@ def animate_hd_i2v(img_path, motion_prompt, out_mp4):
         return "NO_TOKEN"
 
     api = HfApi(token=HF_TOKEN)
-    spaces = ["Wan-AI/Wan2.1", "Lightricks/ltx-video-distilled", "Lightricks/LTX-Video"]
+    spaces = [
+        "Wan-AI/Wan2.1",
+        "Lightricks/ltx-video-distilled",
+        "Lightricks/LTX-Video",
+        "multimodalart/stable-video-diffusion"
+    ]
     try:
-        for q in ["Wan2.2", "Wan2.1", "LTX-Video", "image-to-video"]:
-            for s in api.list_spaces(search=q, sort="likes", limit=12):
+        for q in ["Wan2.2", "Wan2.1", "LTX-Video", "image-to-video", "stable-video-diffusion"]:
+            for s in api.list_spaces(search=q, sort="likes", limit=10):
                 if s.id not in spaces and not any(b in s.id.lower() for b in ("modelscope", "damo", "whisper", "upscale")):
                     spaces.append(s.id)
     except Exception:
@@ -134,18 +140,20 @@ def animate_hd_i2v(img_path, motion_prompt, out_mp4):
                     continue
                 params = info.get("parameters", [])
                 p_img = next((p for p in params if any(w in p.get("parameter_name", "").lower() for w in ("image", "img", "first_frame"))), None)
-                p_txt = next((p for p in params if "prompt" in p.get("parameter_name", "").lower() and "neg" not in p.get("parameter_name", "").lower()), None)
-                if not (p_img and p_txt):
+                if not p_img:
                     continue
+                p_txt = next((p for p in params if "prompt" in p.get("parameter_name", "").lower() and "neg" not in p.get("parameter_name", "").lower()), None)
                 kw = {}
                 for p in params:
                     n = p.get("parameter_name", "")
                     if n == p_img["parameter_name"]:
                         kw[n] = handle_file(img_path)
-                    elif n == p_txt["parameter_name"]:
+                    elif p_txt and n == p_txt["parameter_name"]:
                         kw[n] = motion_prompt
                     elif "neg" in n.lower():
                         kw[n] = "blurry, distorted hands, extra fingers, watermark, text, low quality, static"
+                    elif n.lower() == "duration":
+                        kw[n] = 4
                     elif p.get("parameter_has_default"):
                         kw[n] = p.get("parameter_default")
                 vid = find_media(c.predict(api_name=ep, **kw), (".mp4", ".webm"))
@@ -158,7 +166,6 @@ def animate_hd_i2v(img_path, motion_prompt, out_mp4):
                 quota_hit = True
             print(f"  [Aviso I2V] {sid}: {str(e)[:80]}")
     return "QUOTA" if quota_hit else "FAIL"
-
 def fetch_pixabay_video(query, scene_seed):
     os.makedirs(PIXABAY_VID_CACHE, exist_ok=True)
     if not PIXABAY_KEY:
@@ -202,58 +209,63 @@ def render_all():
         mod_id = os.path.basename(script_path).replace("_script.json", "")
         mod_dir = f"build/renders/{mod_id}"
         os.makedirs(mod_dir, exist_ok=True)
-        print(f"Produciendo capítulo: {script['module_title']}")
+        print(f"Procesando capítulo: {script.get('module_title', mod_id)}")
 
         for scene in script["scenes"]:
             s_num = scene["scene_number"]
             mp3_path = f"{mod_dir}/scene_{s_num:03d}.mp3"
             srt_path = f"{mod_dir}/scene_{s_num:03d}.srt"
-            key_img = f"{mod_dir}/scene_{s_num:03d}_key.png"
-            raw_ai = f"{mod_dir}/scene_{s_num:03d}_raw_ai.mp4"
-            final_mp4 = f"{mod_dir}/scene_{s_num:03d}.mp4"
+            img_path = f"{mod_dir}/scene_{s_num:03d}.png"
+            raw_ai_mp4 = f"{mod_dir}/scene_{s_num:03d}_raw.mp4"
+            final_scene_mp4 = f"{mod_dir}/scene_{s_num:03d}.mp4"
 
-            if os.path.exists(final_mp4) and os.path.getsize(final_mp4) > 50000:
+            if os.path.exists(final_scene_mp4) and os.path.getsize(final_scene_mp4) > 80000:
                 continue
 
             if not (os.path.exists(mp3_path) and os.path.exists(srt_path)):
                 generate_tts_and_subs(scene["narration"], mp3_path, srt_path)
             duration = get_audio_duration(mp3_path) + 0.35
 
-            if scene.get("scene_type") == "ai_technique":
-                res_img = generate_hd_keyframe(scene.get("initial_pose_prompt", ""), key_img)
-                if res_img == "QUOTA":
+            v_type = scene.get("visual_type", "broll_context")
+            source_video = None
+
+            if v_type == "ai_technique":
+                pose_p = scene.get("pose_prompt") or scene.get("ai_image_prompt") or "martial arts self defense technique realistic photo"
+                motion_p = scene.get("motion_prompt") or pose_p
+
+                st_img = generate_hd_keyframe(pose_p, img_path)
+                if st_img == "QUOTA":
                     print("⏸️ Cupo diario de ZeroGPU alcanzado en FLUX. Guardando progreso para reanudar automáticamente...")
                     return
-                if res_img == "OK":
-                    res_vid = animate_hd_i2v(key_img, scene.get("motion_action_prompt", ""), raw_ai)
-                    if res_vid == "QUOTA":
+                if st_img != "OK":
+                    print(f"  [Aviso] No se pudo generar imagen clave en escena {s_num}, usando respaldo visual...")
+                    source_video = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
+                else:
+                    st_vid = animate_hd_i2v(img_path, motion_p, raw_ai_mp4)
+                    if st_vid == "QUOTA":
                         print("⏸️ Cupo diario de ZeroGPU alcanzado en I2V. Guardando progreso para reanudar automáticamente...")
                         return
-                    if res_vid == "OK":
-                        raw_dur = get_audio_duration(raw_ai)
-                        spd = max(1.0, duration / max(0.5, raw_dur))
-                        vf = f"setpts={spd:.2f}*PTS,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
-                        subprocess.run([
-                            "ffmpeg", "-y", "-i", raw_ai, "-i", mp3_path,
-                            "-t", f"{duration:.2f}", "-vf", vf,
-                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-                            "-c:a", "aac", "-b:a", "128k", "-shortest", final_mp4
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        print(f"  -> Escena {s_num:02d} [Técnica IA HD] lista ({duration:.1f}s)")
-                        continue
+                    if st_vid == "OK":
+                        source_video = raw_ai_mp4
+                    else:
+                        print(f"  [Aviso] Falló animación I2V en escena {s_num}, usando respaldo visual...")
+                        source_video = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
+            else:
+                source_video = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
 
-            broll = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
-            if not broll or not os.path.exists(broll):
-                raise RuntimeError("No se pudo obtener video real de respaldo en Pixabay.")
+            if not source_video or not os.path.exists(source_video):
+                print(f"  [Aviso] Sin video disponible para escena {s_num}, saltando...")
+                continue
 
             vf = f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
             subprocess.run([
-                "ffmpeg", "-y", "-stream_loop", "-1", "-i", broll, "-i", mp3_path,
+                "ffmpeg", "-y", "-stream_loop", "-1", "-i", source_video, "-i", mp3_path,
                 "-t", f"{duration:.2f}", "-vf", vf,
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k", "-shortest", final_mp4
+                "-c:a", "aac", "-b:a", "128k", "-shortest", final_scene_mp4
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"  -> Escena {s_num:02d} [Contexto HD] lista ({duration:.1f}s)")
+
+            print(f"  -> Escena {s_num:02d} ({v_type}) lista ({duration:.1f}s)")
 
 if __name__ == "__main__":
     render_all()
