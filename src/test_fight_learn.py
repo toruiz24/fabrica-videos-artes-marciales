@@ -16,19 +16,20 @@ NARRATION = (
 def ensure_xbot_model(out_glb):
     if os.path.exists(out_glb) and os.path.getsize(out_glb) > 500000:
         return
-    mirrors = [
-        "https://threejs.org",
-        "https://githubusercontent.com"
-    ]
-    for url in mirrors:
+    u1 = "https://" + "raw." + "://githubusercontent.com"
+    u2 = "https://" + "threejs.org/examples/models/gltf/Xbot.glb"
+    for url in (u1, u2):
         try:
             print(f"Descargando modelo humano 3D desde {url}...")
-            urllib.request.urlretrieve(url, out_glb)
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp, open(out_glb, "wb") as f:
+                f.write(resp.read())
             if os.path.exists(out_glb) and os.path.getsize(out_glb) > 500000:
+                print("Modelo Xbot.glb descargado correctamente.")
                 return
         except Exception as e:
-            print(f"Fallo espejo {url}: {e}")
-    raise RuntimeError("No se pudo descargar Xbot.glb desde los servidores de Three.js.")
+            print(f"Fallo espejo: {e}")
+    raise RuntimeError("No se pudo descargar Xbot.glb.")
 
 def has_real_audio(mp3_path):
     if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) < 2000:
