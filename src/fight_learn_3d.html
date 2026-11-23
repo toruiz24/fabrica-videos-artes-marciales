@@ -43,13 +43,13 @@
 
 <script>
 window.sceneReady = false;
-let defModel, defBones, impactSphere, arrowGroup;
+let defModel, aggModel, defData, aggData, impactSphere, arrowGroup;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x070b14);
-scene.fog = new THREE.Fog(0x070b14, 5, 14);
+scene.fog = new THREE.Fog(0x070b14, 6, 16);
 
-const camera = new THREE.PerspectiveCamera(38, 1920 / 1080, 0.1, 50);
+const camera = new THREE.PerspectiveCamera(40, 1920 / 1080, 0.1, 50);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(1920, 1080);
 renderer.shadowMap.enabled = true;
@@ -58,7 +58,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.25;
 document.body.appendChild(renderer.domElement);
 
-scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
 const keyLight = new THREE.DirectionalLight(0xfff7ed, 1.5);
 keyLight.position.set(3, 6, 4);
 keyLight.castShadow = true;
@@ -78,7 +78,7 @@ floor.receiveShadow = true;
 scene.add(floor);
 
 const ring = new THREE.Mesh(
-  new THREE.RingGeometry(1.05, 1.12, 64),
+  new THREE.RingGeometry(1.15, 1.22, 64),
   new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide })
 );
 ring.rotation.x = -Math.PI / 2;
@@ -89,21 +89,20 @@ const grid = new THREE.GridHelper(12, 24, 0x1e293b, 0x111827);
 grid.position.y = 0.001;
 scene.add(grid);
 
-// Punto objetivo flotante (altura del mentón del agresor) + flecha de trayectoria
 impactSphere = new THREE.Mesh(
   new THREE.SphereGeometry(0.055, 20, 20),
-  new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.85 })
+  new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.9 })
 );
-impactSphere.position.set(0.02, 1.48, 0.68);
+impactSphere.position.set(0.02, 1.48, 0.34);
 scene.add(impactSphere);
 
 arrowGroup = new THREE.Group();
 const shaft = new THREE.Mesh(
-  new THREE.CylinderGeometry(0.012, 0.012, 0.46, 12),
+  new THREE.CylinderGeometry(0.012, 0.012, 0.44, 12),
   new THREE.MeshBasicMaterial({ color: 0xf59e0b })
 );
 shaft.rotation.x = Math.PI / 2;
-shaft.position.set(0.06, 1.45, 0.36);
+shaft.position.set(0.06, 1.44, 0.06);
 arrowGroup.add(shaft);
 
 const tip = new THREE.Mesh(
@@ -111,17 +110,19 @@ const tip = new THREE.Mesh(
   new THREE.MeshBasicMaterial({ color: 0xf59e0b })
 );
 tip.rotation.x = Math.PI / 2;
-tip.position.set(0.04, 1.47, 0.61);
+tip.position.set(0.04, 1.46, 0.29);
 arrowGroup.add(tip);
 scene.add(arrowGroup);
-function mapBones(model) {
+function mapFighter(model, bodyColor, accentColor, isDef) {
   const bones = {};
   model.traverse(obj => {
+    obj.frustumCulled = false;
     if (obj.isMesh) {
       obj.castShadow = true;
       obj.receiveShadow = true;
+      const isJoint = obj.name.toLowerCase().includes("joint");
       obj.material = new THREE.MeshStandardMaterial({
-        color: obj.name.toLowerCase().includes("joint") ? 0x38bdf8 : 0xe2e8f0,
+        color: isJoint ? accentColor : bodyColor,
         roughness: 0.38,
         metalness: 0.25
       });
@@ -129,16 +130,18 @@ function mapBones(model) {
     if (obj.isBone) bones[obj.name] = obj;
   });
 
-  if (bones.mixamorigSpine2) {
+  const baseHipY = bones.mixamorigHips ? bones.mixamorigHips.position.y : 94;
+
+  if (isDef && bones.mixamorigSpine2) {
     const axis = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.005, 0.005, 0.68, 12),
+      new THREE.CylinderGeometry(0.45, 0.45, 58, 12),
       new THREE.MeshBasicMaterial({ color: 0x10b981 })
     );
     axis.rotation.z = Math.PI / 2;
-    axis.position.set(0, 0.14, 0);
+    axis.position.set(0, 12, 0);
     bones.mixamorigSpine2.add(axis);
   }
-  return bones;
+  return { bones, baseHipY };
 }
 
 function setFingers(bones, side, curl, thumbCurl) {
@@ -154,16 +157,17 @@ function setFingers(bones, side, curl, thumbCurl) {
   }
 }
 
-function applyBaseGuard(bones) {
+function applyBaseGuard(data, isDef) {
+  const { bones, baseHipY } = data;
   if (!bones.mixamorigHips) return;
-  bones.mixamorigHips.position.set(0, 0.94, 0);
-  bones.mixamorigHips.rotation.set(0.05, -0.12, 0);
+  bones.mixamorigHips.position.set(0, baseHipY * 0.96, 0);
+  bones.mixamorigHips.rotation.set(0.05, isDef ? -0.12 : 0.12, 0);
 
   ['mixamorigSpine', 'mixamorigSpine1', 'mixamorigSpine2'].forEach(n => {
     if (bones[n]) bones[n].rotation.set(0.03, 0, 0);
   });
   if (bones.mixamorigNeck) bones.mixamorigNeck.rotation.set(-0.05, 0, 0);
-  if (bones.mixamorigHead) bones.mixamorigHead.rotation.set(-0.03, 0.10, 0);
+  if (bones.mixamorigHead) bones.mixamorigHead.rotation.set(-0.03, isDef ? 0.10 : -0.10, 0);
 
   if (bones.mixamorigLeftUpLeg) bones.mixamorigLeftUpLeg.rotation.set(-0.34, 0, -0.08);
   if (bones.mixamorigLeftLeg) bones.mixamorigLeftLeg.rotation.set(0.50, 0, 0);
@@ -197,16 +201,27 @@ function strikeProfile(t) {
 
 new THREE.GLTFLoader().load('Xbot.glb', gltf => {
   defModel = THREE.SkeletonUtils.clone(gltf.scene);
-  defBones = mapBones(defModel);
-  defModel.position.set(0, 0, -0.25);
+  aggModel = THREE.SkeletonUtils.clone(gltf.scene);
+
+  defData = mapFighter(defModel, 0xe2e8f0, 0x38bdf8, true);
+  aggData = mapFighter(aggModel, 0x475569, 0xef4444, false);
+
+  defModel.position.set(0, 0, -0.52);
+  aggModel.position.set(0, 0, 0.44);
+  aggModel.rotation.y = Math.PI;
+
   scene.add(defModel);
-  applyBaseGuard(defBones);
+  scene.add(aggModel);
+
+  applyBaseGuard(defData, true);
+  applyBaseGuard(aggData, false);
   window.sceneReady = true;
 });
 
 window.renderFrame = function(ratio) {
   if (!window.sceneReady) return;
-  applyBaseGuard(defBones);
+  applyBaseGuard(defData, true);
+  applyBaseGuard(aggData, false);
 
   const badge = document.getElementById('hud-mode');
   document.getElementById('bar-fill').style.width = `${Math.round(ratio * 100)}%`;
@@ -226,30 +241,34 @@ window.renderFrame = function(ratio) {
     strike = strikeProfile((ratio - 0.50) / 0.50);
   }
 
-  defModel.position.z = lerp(-0.25, 0.04, strike);
-  defBones.mixamorigHips.position.y = lerp(0.94, 0.90, strike);
-  defBones.mixamorigLeftUpLeg.rotation.x = lerp(-0.34, -0.52, strike);
-  defBones.mixamorigLeftLeg.rotation.x = lerp(0.50, 0.66, strike);
+  defModel.position.z = lerp(-0.52, -0.22, strike);
+  defData.bones.mixamorigHips.position.y = defData.baseHipY * lerp(0.96, 0.92, strike);
+  defData.bones.mixamorigLeftUpLeg.rotation.x = lerp(-0.34, -0.52, strike);
+  defData.bones.mixamorigLeftLeg.rotation.x = lerp(0.50, 0.66, strike);
 
   const openT = Math.min(1, strike * 2.2);
-  setFingers(defBones, 'Left', lerp(1.15, -0.05, openT), lerp(0.65, -0.15, openT));
+  setFingers(defData.bones, 'Left', lerp(1.15, -0.05, openT), lerp(0.65, -0.15, openT));
 
-  defBones.mixamorigLeftArm.rotation.set(
+  defData.bones.mixamorigLeftArm.rotation.set(
     lerp(0.55, 1.38, strike),
     lerp(0.22, -0.15, strike),
     lerp(-1.15, -0.10, strike)
   );
-  defBones.mixamorigLeftForeArm.rotation.set(0, 0, lerp(-1.95, -0.06, strike));
-  defBones.mixamorigLeftHand.rotation.set(lerp(0, -1.15, strike), lerp(0, 0.25, strike), lerp(0, 0.65, strike));
+  defData.bones.mixamorigLeftForeArm.rotation.set(0, 0, lerp(-1.95, -0.06, strike));
+  defData.bones.mixamorigLeftHand.rotation.set(lerp(0, -1.15, strike), lerp(0, 0.25, strike), lerp(0, 0.65, strike));
 
-  const pulse = 1.0 + Math.max(0, (strike - 0.8) * 2.5);
-  impactSphere.scale.setScalar(pulse);
+  const impact = Math.max(0, (strike - 0.85) / 0.15);
+  if (aggData.bones.mixamorigNeck) aggData.bones.mixamorigNeck.rotation.x = -0.32 * impact;
+  if (aggData.bones.mixamorigHead) aggData.bones.mixamorigHead.rotation.x = -0.42 * impact;
+  aggModel.position.z = lerp(0.44, 0.52, impact);
+
+  impactSphere.scale.setScalar(1.0 + impact * 0.6);
   arrowGroup.visible = strike > 0.05;
 
   const camAngle = ratio >= 0.50 ? lerp(0.65, 1.55, Math.min(1, (ratio - 0.50) * 4.0)) : 0.65;
   const dist = ratio >= 0.50 ? 2.15 : 2.35;
-  camera.position.set(Math.sin(camAngle) * dist, 1.38, Math.cos(camAngle) * dist + 0.15);
-  camera.lookAt(0, 1.18, 0.20);
+  camera.position.set(Math.sin(camAngle) * dist, 1.38, Math.cos(camAngle) * dist);
+  camera.lookAt(0, 1.18, 0.02);
 
   renderer.render(scene, camera);
 };
