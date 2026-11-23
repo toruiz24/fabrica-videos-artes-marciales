@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #090e1a; overflow: hidden; font-family: 'DejaVu Sans', 'Segoe UI', sans-serif; }
+  canvas { display: block; width: 1920px; height: 1080px; }
+</style>
+</head>
+<body>
+<canvas id="stage" width="1920" height="1080"></canvas>
+<script>
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+
+window.CONFIG = {
+  title: "GOLPE DE PALMA ABIERTA AL MENTÓN",
+  subtitle: "Tronco bloqueado · Impulso desde el paso delantero",
+  weapon: "palm",        // palm | fist | elbow | knee | kick | block
+  target: "chin",        // chin | nose | throat | solar_plexus | groin | knee
+  trajectory: "straight",// straight | uppercut | hook | low
+  torsoLock: true
+};
+
+window.setConfig = function(cfg) {
+  window.CONFIG = Object.assign({}, window.CONFIG, cfg);
+};
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+function ballistic(t) {
+  if (t <= 0) return 0;
+  if (t < 0.20) { const p = t / 0.20; return p * p * p; }
+  if (t < 0.42) return 1.0;
+  if (t < 0.78) { const p = (t - 0.42) / 0.36; return 1.0 - (p * p * (3 - 2 * p)); }
+  return 0;
+}
+
+function drawLimb(x1, y1, x2, y2, r1, r2, color) {
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const perp = angle + Math.PI / 2;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x1 + Math.cos(perp) * r1, y1 + Math.sin(perp) * r1);
+  ctx.lineTo(x2 + Math.cos(perp) * r2, y2 + Math.sin(perp) * r2);
+  ctx.arc(x2, y2, r2, perp, perp + Math.PI);
+  ctx.lineTo(x1 - Math.cos(perp) * r1, y1 - Math.sin(perp) * r1);
+  ctx.arc(x1, y1, r1, perp + Math.PI, perp);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawHand(x, y, angle, weapon, isDefender) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  const color = isDefender ? '#38bdf8' : '#94a3b8';
+  ctx.fillStyle = color;
+
+  if (weapon === 'palm') {
+    // Muñeca flexionada hacia atrás y palma abierta vertical con dedos extendidos
+    ctx.beginPath();
+    ctx.roundRect(-8, -28, 18, 34, 6);
+    ctx.fill();
+    // Dedos extendidos hacia arriba
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      ctx.roundRect(-6 + i * 4, -52, 11, 26, 4);
+      ctx.fill();
+    }
+    // Pulgar
+    ctx.beginPath();
+    ctx.roundRect(8, -24, 14, 9, 4);
+    ctx.fill();
+    // Zona de impacto resaltada en el talón de la palma
+    ctx.fillStyle = '#f59e0b';
+    ctx.beginPath();
+    ctx.arc(10, -4, 7, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    // Puño cerrado anatómico
+    ctx.beginPath();
+    ctx.roundRect(-14, -16, 30, 26, 9);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function computeFighter(baseX, baseY, dir, pose, isDefender) {
+  const hipX = baseX + pose.hipShiftX * dir;
+  const hipY = baseY - 310 + pose.hipShiftY;
+
+  // Pierna atrasada y adelantada
+  const backKneeX = hipX - (55 + pose.stanceWidth * 0.4) * dir;
+  const backKneeY = hipY + 145;
+  const backFootX = backKneeX - 45 * dir;
+  const backFootY = baseY;
+
+  const frontKneeX = hipX + (65 + pose.stanceWidth * 0.6) * dir;
+  const frontKneeY = hipY + 140 + pose.kneeBend;
+  const frontFootX = frontKneeX + 35 * dir;
+  const frontFootY = baseY;
+
+  // Columna y hombros
+  const torsoRad = (pose.torsoLean * dir) * Math.PI / 180;
+  const shoulderX = hipX + Math.sin(torsoRad) * 185;
+  const shoulderY = hipY - Math.cos(torsoRad) * 185;
+
+  const headRad = ((pose.torsoLean + pose.headTilt) * dir) * Math.PI / 180;
+  const neckX = shoulderX + Math.sin(headRad) * 28;
+  const neckY = shoulderY - Math.cos(headRad) * 28;
+  const headX = neckX + Math.sin(headRad) * 34;
+  const headY = neckY - Math.cos(headRad) * 34;
+
+  // Brazo atrasado (guardia)
+  const bElbowX = shoulderX - 18 * dir;
+  const bElbowY = shoulderY + 85;
+  const bHandX = shoulderX + 42 * dir;
+  const bHandY = shoulderY - 12;
+
+  // Brazo principal (ataque / técnica)
+  const fElbowX = lerp(shoulderX + 35 * dir, pose.targetHandX - 115 * dir, pose.strike);
+  const fElbowY = lerp(shoulderY + 75, pose.targetHandY + 18, pose.strike);
+  const fHandX = lerp(shoulderX + 85 * dir, pose.targetHandX, pose.strike);
+  const fHandY = lerp(shoulderY - 22, pose.targetHandY, pose.strike);
+
+  return {
+    hipX, hipY, backKneeX, backKneeY, backFootX, backFootY,
+    frontKneeX, frontKneeY, frontFootX, frontFootY,
+    shoulderX, shoulderY, neckX, neckY, headX, headY,
+    bElbowX, bElbowY, bHandX, bHandY,
+    fElbowX, fElbowY, fHandX, fHandY, dir, isDefender
+  };
+}
+function drawFighter(f, activeWeapon) {
+  const cMain = f.isDefender ? '#0284c7' : '#334155';
+  const cDark = f.isDefender ? '#0369a1' : '#1e293b';
+  const cSkin = f.isDefender ? '#e2e8f0' : '#94a3b8';
+
+  // Brazo y pierna atrasados (plano posterior)
+  drawLimb(f.shoulderX, f.shoulderY, f.bElbowX, f.bElbowY, 19, 15, cDark);
+  drawLimb(f.bElbowX, f.bElbowY, f.bHandX, f.bHandY, 14, 11, cDark);
+  drawHand(f.bHandX, f.bHandY, 0, 'fist', f.isDefender);
+
+  drawLimb(f.hipX, f.hipY, f.backKneeX, f.backKneeY, 27, 20, cDark);
+  drawLimb(f.backKneeX, f.backKneeY, f.backFootX, f.backFootY, 19, 13, cDark);
+
+  // Torso anatómico
+  drawLimb(f.hipX, f.hipY, f.shoulderX, f.shoulderY, 32, 42, cMain);
+
+  // Cabeza con perfil y mentón definido
+  ctx.fillStyle = cSkin;
+  ctx.beginPath();
+  ctx.arc(f.headX, f.headY, 31, 0, Math.PI * 2);
+  ctx.fill();
+  // Mentón adelantado para marcar punto de impacto claro
+  ctx.beginPath();
+  ctx.arc(f.headX + 14 * f.dir, f.headY + 16, 15, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Pierna adelantada
+  drawLimb(f.hipX, f.hipY, f.frontKneeX, f.frontKneeY, 29, 21, cMain);
+  drawLimb(f.frontKneeX, f.frontKneeY, f.frontFootX, f.frontFootY, 20, 14, cMain);
+
+  // Brazo ejecutor (plano principal)
+  drawLimb(f.shoulderX, f.shoulderY, f.fElbowX, f.fElbowY, 21, 16, cSkin);
+  drawLimb(f.fElbowX, f.fElbowY, f.fHandX, f.fHandY, 16, 12, cSkin);
+  drawHand(f.fHandX, f.fHandY, 0, activeWeapon, f.isDefender);
+}
+
+function getTargetCoords(agg, targetName) {
+  switch (targetName) {
+    case 'nose':         return { x: agg.headX - 24, y: agg.headY - 2 };
+    case 'throat':       return { x: agg.neckX - 14, y: agg.neckY + 8 };
+    case 'solar_plexus': return { x: lerp(agg.hipX, agg.shoulderX, 0.55) - 28, y: lerp(agg.hipY, agg.shoulderY, 0.55) };
+    case 'groin':        return { x: agg.hipX - 20, y: agg.hipY + 12 };
+    case 'knee':         return { x: agg.frontKneeX - 16, y: agg.frontKneeY };
+    case 'chin':
+    default:             return { x: agg.headX - 18, y: agg.headY + 18 };
+  }
+}
+
+function drawOverlays(def, agg, targetPt, strike, isSlowMo) {
+  // 1. Flecha de paso en el suelo
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.65)';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(def.frontFootX - 80, 895);
+  ctx.lineTo(def.frontFootX + 20, 895);
+  ctx.stroke();
+  ctx.fillStyle = '#38bdf8';
+  ctx.beginPath();
+  ctx.moveTo(def.frontFootX + 34, 895);
+  ctx.lineTo(def.frontFootX + 12, 885);
+  ctx.lineTo(def.frontFootX + 12, 905);
+  ctx.fill();
+
+  // 2. Indicador de tronco bloqueado (0°)
+  if (window.CONFIG.torsoLock) {
+    ctx.strokeStyle = '#10b981';
+    ctx.setLineDash([8, 6]);
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(def.hipX, def.hipY + 30);
+    ctx.lineTo(def.hipX, def.shoulderY - 40);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#10b981';
+    ctx.font = 'bold 18px DejaVu Sans';
+    ctx.fillText('TRONCO 0°', def.hipX - 48, def.shoulderY - 52);
+  }
+
+  // 3. Vector de trayectoria del golpe
+  const startX = def.shoulderX + 85;
+  const startY = def.shoulderY - 22;
+  ctx.strokeStyle = 'rgba(245, 158, 11, 0.85)';
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(startX, startY);
+  if (window.CONFIG.trajectory === 'uppercut') {
+    ctx.quadraticCurveTo(lerp(startX, targetPt.x, 0.5), startY + 90, targetPt.x, targetPt.y);
+  } else {
+    ctx.lineTo(targetPt.x, targetPt.y);
+  }
+  ctx.stroke();
+
+  // 4. Punto rojo pulsante de impacto
+  const pulse = 18 + Math.sin(strike * Math.PI) * 14;
+  ctx.fillStyle = 'rgba(239, 68, 68, 0.30)';
+  ctx.beginPath();
+  ctx.arc(targetPt.x, targetPt.y, pulse + 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = '#ef4444';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(targetPt.x, targetPt.y, pulse, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ef4444';
+  ctx.beginPath();
+  ctx.arc(targetPt.x, targetPt.y, 7, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 5. HUD superior estilo App de Entrenamiento
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+  ctx.fillRect(50, 40, 1820, 110);
+  ctx.fillStyle = '#f59e0b';
+  ctx.fillRect(50, 40, 10, 110);
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = 'bold 34px DejaVu Sans';
+  ctx.fillText(window.CONFIG.title.toUpperCase(), 85, 88);
+
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '22px DejaVu Sans';
+  ctx.fillText(window.CONFIG.subtitle, 85, 128);
+
+  // Badge de velocidad (Velocidad Real vs Cámara Lenta 25%)
+  ctx.fillStyle = isSlowMo ? '#38bdf8' : '#f59e0b';
+  ctx.beginPath();
+  ctx.roundRect(1520, 62, 320, 64, 10);
+  ctx.fill();
+  ctx.fillStyle = '#090e1a';
+  ctx.font = 'bold 22px DejaVu Sans';
+  ctx.textAlign = 'center';
+  ctx.fillText(isSlowMo ? 'CÁMARA LENTA · 25%' : 'VELOCIDAD REAL', 1680, 102);
+  ctx.textAlign = 'left';
+}
+
+window.renderFrame = function(ratio) {
+  ctx.fillStyle = '#090e1a';
+  ctx.fillRect(0, 0, 1920, 1080);
+
+  // Cuadrícula táctica de fondo y línea de tatami
+  ctx.strokeStyle = '#1e293b';
+  ctx.lineWidth = 2;
+  for (let x = 0; x <= 1920; x += 80) {
+    ctx.beginPath(); ctx.moveTo(x, 180); ctx.lineTo(x, 860); ctx.stroke();
+  }
+  for (let y = 180; y <= 860; y += 80) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(1920, y); ctx.stroke();
+  }
+  ctx.fillStyle = '#111827';
+  ctx.fillRect(0, 860, 1920, 220);
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(0, 860); ctx.lineTo(1920, 860); ctx.stroke();
+
+  const isSlowMo = ratio >= 0.45;
+  const localT = !isSlowMo ? clamp((ratio - 0.06) / 0.35, 0, 1) : clamp((ratio - 0.50) / 0.46, 0, 1);
+  const strike = ballistic(localT);
+  const impact = clamp((strike - 0.82) / 0.18, 0, 1);
+
+  // Agresor (derecha, mirando a la izquierda)
+  const aggPose = {
+    hipShiftX: -impact * 28,
+    hipShiftY: 0,
+    stanceWidth: 20,
+    kneeBend: 0,
+    torsoLean: -4 - impact * 12,
+    headTilt: -impact * 26,
+    strike: 0,
+    targetHandX: 1020,
+    targetHandY: 540
+  };
+  const agg = computeFighter(1140, 860, -1, aggPose, false);
+  const targetPt = getTargetCoords(agg, window.CONFIG.target);
+
+  // Defensor (izquierda, mirando a la derecha)
+  const defPose = {
+    hipShiftX: strike * 95,
+    hipShiftY: strike * 8,
+    stanceWidth: 25 + strike * 35,
+    kneeBend: strike * 10,
+    torsoLean: window.CONFIG.torsoLock ? 2 : (4 + strike * 16),
+    headTilt: 2,
+    strike: strike,
+    targetHandX: targetPt.x,
+    targetHandY: targetPt.y
+  };
+  const def = computeFighter(760, 860, 1, defPose, true);
+
+  drawFighter(agg, 'fist');
+  drawFighter(def, strike > 0.12 ? window.CONFIG.weapon : 'fist');
+  drawOverlays(def, agg, targetPt, strike, isSlowMo);
+};
+</script>
+</body>
+</html>
