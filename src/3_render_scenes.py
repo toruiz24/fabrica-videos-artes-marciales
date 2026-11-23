@@ -1,17 +1,14 @@
 import os
+import re
 import json
 import glob
 import time
 import shutil
 import hashlib
+import asyncio
 import subprocess
 import requests
-from huggingface_hub import HfApi, login
-from gradio_client import Client, handle_file
-
-HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
-if HF_TOKEN:
-    login(token=HF_TOKEN)
+from playwright.async_api import async_playwright
 
 PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 PIXABAY_VID_CACHE = "build/pixabay_videos"
@@ -41,136 +38,60 @@ def generate_tts_and_subs(text, out_mp3, out_srt, max_retries=5):
                 raise
             time.sleep(4 * attempt)
 
-def find_media(res, exts):
-    if isinstance(res, str) and os.path.exists(res) and any(res.lower().endswith(e) for e in exts):
-        return res
-    if isinstance(res, dict):
-        for k in ("video", "image", "value", "path", "url"):
-            f = find_media(res.get(k), exts)
-            if f:
-                return f
-    if isinstance(res, (list, tuple)):
-        for x in res:
-            f = find_media(x, exts)
-            if f:
-                return f
-    return None
+def infer_technique_config(scene):
+    text = f"{scene.get('narration', '')} {scene.get('pose_prompt', '')} {scene.get('motion_prompt', '')}".lower()
 
-def generate_hd_keyframe(pose_prompt, out_img):
-    if os.path.exists(out_img) and os.path.getsize(out_img) > 30000:
-        return "OK"
-    if not HF_TOKEN:
-        return "NO_TOKEN"
+    weapon = "fist"
+    w_label = "GOLPE DE PUÑO"
+    if any(k in text for k in ["palma", "palm", "mano abierta", "talón de la mano"]):
+        weapon, w_label = "palm", "GOLPE DE PALMA ABIERTA"
+    elif any(k in text for k in ["codo", "elbow", "codazo"]):
+        weapon, w_label = "elbow", "GOLPE DE CODO"
+    elif any(k in text for k in ["rodilla", "knee", "rodillazo"]):
+        weapon, w_label = "knee", "GOLPE DE RODILLA"
+    elif any(k in text for k in ["patada", "kick", "empeine", "tibia", "pie"]):
+        weapon, w_label = "kick", "PATADA TÁCTICA"
+    elif any(k in text for k in ["bloqueo", "guardia", "desvío", "defensa", "esquive"]):
+        weapon, w_label = "block", "GUARDIA Y DESVÍO"
 
-    api = HfApi(token=HF_TOKEN)
-    spaces = ["black-forest-labs/FLUX.1-schnell", "multimodalart/FLUX.1-merged"]
-    try:
-        for s in api.list_spaces(search="FLUX.1-schnell", sort="likes", limit=8):
-            if s.id not in spaces:
-                spaces.append(s.id)
-    except Exception:
-        pass
+    target = "chin"
+    t_label = "AL MENTÓN"
+    if any(k in text for k in ["nariz", "tabique", "nose"]):
+        target, t_label = "nose", "AL TABIQUE NASAL"
+    elif any(k in text for k in ["garganta", "cuello", "tráquea", "throat"]):
+        target, t_label = "throat", "A LA GARGANTA"
+    elif any(k in text for k in ["plexo", "estómago", "abdomen", "boca del estómago", "solar"]):
+        target, t_label = "solar_plexus", "AL PLEXO SOLAR"
+    elif any(k in text for k in ["ingle", "genital", "testículo", "zona baja", "groin"]):
+        target, t_label = "groin", "A LA ZONA BAJA"
+    elif any(k in text for k in ["rodilla", "pierna", "muslo", "canilla"]):
+        target, t_label = "knee", "A LA RODILLA"
 
-    quota_hit = False
-    for sid in spaces:
-        try:
-            if api.get_space_runtime(sid).stage != "RUNNING":
-                continue
-            c = Client(sid, verbose=False)
-            named = c.view_api(return_format="dict").get("named_endpoints", {})
-            for ep, info in named.items():
-                if "login" in ep.lower():
-                    continue
-                params = info.get("parameters", [])
-                p_prompt = next((p for p in params if "prompt" in p.get("parameter_name", "").lower()), None)
-                if not p_prompt:
-                    continue
-                kw = {}
-                for p in params:
-                    n = p.get("parameter_name", "")
-                    if n == p_prompt["parameter_name"]:
-                        kw[n] = pose_prompt
-                    elif n.lower() == "width":
-                        kw[n] = 1280
-                    elif n.lower() == "height":
-                        kw[n] = 720
-                    elif p.get("parameter_has_default"):
-                        kw[n] = p.get("parameter_default")
-                img = find_media(c.predict(api_name=ep, **kw), (".png", ".jpg", ".webp"))
-                if img and os.path.getsize(img) > 30000:
-                    shutil.copyfile(img, out_img)
-                    return "OK"
-        except Exception as e:
-            err = str(e).lower()
-            if "quota" in err or "exceeded" in err or "429" in err or "gpu" in err:
-                quota_hit = True
-            print(f"  [Aviso FLUX] {sid}: {str(e)[:80]}")
-    return "QUOTA" if quota_hit else "FAIL"
+    trajectory = "straight"
+    if any(k in text for k in ["ascendente", "desde abajo", "uppercut", "subiendo"]):
+        trajectory = "uppercut"
+    elif any(k in text for k in ["circular", "gancho", "hook", "lateral"]):
+        trajectory = "hook"
 
-def animate_hd_i2v(img_path, motion_prompt, out_mp4):
-    if os.path.exists(out_mp4) and os.path.getsize(out_mp4) > 80000:
-        return "OK"
-    if not HF_TOKEN:
-        return "NO_TOKEN"
+    torso_lock = any(k in text for k in ["sin torcer", "bloqueado", "cero grados", "recto", "eje", "sin rotar"]) or weapon == "palm"
 
-    api = HfApi(token=HF_TOKEN)
-    spaces = [
-        "Wan-AI/Wan2.1",
-        "Lightricks/ltx-video-distilled",
-        "Lightricks/LTX-Video",
-        "multimodalart/stable-video-diffusion"
-    ]
-    try:
-        for q in ["Wan2.2", "Wan2.1", "LTX-Video", "image-to-video", "stable-video-diffusion"]:
-            for s in api.list_spaces(search=q, sort="likes", limit=10):
-                if s.id not in spaces and not any(b in s.id.lower() for b in ("modelscope", "damo", "whisper", "upscale")):
-                    spaces.append(s.id)
-    except Exception:
-        pass
+    raw_narr = re.sub(r'\s+', ' ', scene.get("narration", "")).strip()
+    subtitle = (raw_narr[:78] + "...") if len(raw_narr) > 80 else raw_narr
 
-    quota_hit = False
-    for sid in spaces:
-        try:
-            if api.get_space_runtime(sid).stage != "RUNNING":
-                continue
-            c = Client(sid, verbose=False)
-            named = c.view_api(return_format="dict").get("named_endpoints", {})
-            for ep, info in named.items():
-                if any(w in ep.lower() for w in ("login", "upscale", "t2v")):
-                    continue
-                params = info.get("parameters", [])
-                p_img = next((p for p in params if any(w in p.get("parameter_name", "").lower() for w in ("image", "img", "first_frame"))), None)
-                if not p_img:
-                    continue
-                p_txt = next((p for p in params if "prompt" in p.get("parameter_name", "").lower() and "neg" not in p.get("parameter_name", "").lower()), None)
-                kw = {}
-                for p in params:
-                    n = p.get("parameter_name", "")
-                    if n == p_img["parameter_name"]:
-                        kw[n] = handle_file(img_path)
-                    elif p_txt and n == p_txt["parameter_name"]:
-                        kw[n] = motion_prompt
-                    elif "neg" in n.lower():
-                        kw[n] = "blurry, distorted hands, extra fingers, watermark, text, low quality, static"
-                    elif n.lower() == "duration":
-                        kw[n] = 4
-                    elif p.get("parameter_has_default"):
-                        kw[n] = p.get("parameter_default")
-                vid = find_media(c.predict(api_name=ep, **kw), (".mp4", ".webm"))
-                if vid and os.path.getsize(vid) > 80000:
-                    shutil.copyfile(vid, out_mp4)
-                    return "OK"
-        except Exception as e:
-            err = str(e).lower()
-            if "quota" in err or "exceeded" in err or "429" in err or "gpu" in err:
-                quota_hit = True
-            print(f"  [Aviso I2V] {sid}: {str(e)[:80]}")
-    return "QUOTA" if quota_hit else "FAIL"
+    return {
+        "title": f"{w_label} {t_label}",
+        "subtitle": subtitle,
+        "weapon": weapon,
+        "target": target,
+        "trajectory": trajectory,
+        "torsoLock": torso_lock
+    }
+
 def fetch_pixabay_video(query, scene_seed):
     os.makedirs(PIXABAY_VID_CACHE, exist_ok=True)
     if not PIXABAY_KEY:
         return None
-    for search_q in [query, "martial arts", "boxing", "kickboxing", "training", "city night"]:
+    for search_q in [query, "martial arts training", "boxing gym", "self defense", "focus silhouette"]:
         q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
         cached = sorted(glob.glob(f"{PIXABAY_VID_CACHE}/{q_hash}_*.mp4"))
         if cached:
@@ -197,75 +118,94 @@ def fetch_pixabay_video(query, scene_seed):
         except Exception:
             pass
     return None
+async def render_fitness_animation(page, config, duration, mp3_path, srt_path, out_mp4):
+    frames_dir = "build/fitness_frames"
+    if os.path.exists(frames_dir):
+        shutil.rmtree(frames_dir)
+    os.makedirs(frames_dir, exist_ok=True)
 
-def render_all():
+    fps = 30
+    total_frames = max(60, int(duration * fps))
+    await page.evaluate("(cfg) => window.setConfig(cfg)", config)
+
+    for frame in range(total_frames):
+        ratio = frame / max(1, total_frames - 1)
+        await page.evaluate("(r) => window.renderFrame(r)", ratio)
+        await page.screenshot(path=f"{frames_dir}/f_{frame:05d}.png")
+
+    sub_style = "FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=35"
+    subprocess.run([
+        "ffmpeg", "-y", "-framerate", str(fps),
+        "-i", f"{frames_dir}/f_%05d.png",
+        "-i", mp3_path,
+        "-t", f"{duration:.2f}",
+        "-vf", f"subtitles={srt_path}:force_style='{sub_style}'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        out_mp4
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+async def render_all():
     script_files = sorted(glob.glob("build/scripts/*_script.json"))
     sub_style = "FontName=DejaVu Sans,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=1,MarginV=35"
+    html_uri = "file://" + os.path.abspath("src/fitness_animator.html")
 
-    for script_path in script_files:
-        with open(script_path, "r", encoding="utf-8") as f:
-            script = json.load(f)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page(viewport={"width": 1920, "height": 1080})
+        await page.goto(html_uri)
 
-        mod_id = os.path.basename(script_path).replace("_script.json", "")
-        mod_dir = f"build/renders/{mod_id}"
-        os.makedirs(mod_dir, exist_ok=True)
-        print(f"Procesando capítulo: {script.get('module_title', mod_id)}")
+        for script_path in script_files:
+            with open(script_path, "r", encoding="utf-8") as f:
+                script = json.load(f)
 
-        for scene in script["scenes"]:
-            s_num = scene["scene_number"]
-            mp3_path = f"{mod_dir}/scene_{s_num:03d}.mp3"
-            srt_path = f"{mod_dir}/scene_{s_num:03d}.srt"
-            img_path = f"{mod_dir}/scene_{s_num:03d}.png"
-            raw_ai_mp4 = f"{mod_dir}/scene_{s_num:03d}_raw.mp4"
-            final_scene_mp4 = f"{mod_dir}/scene_{s_num:03d}.mp4"
+            mod_id = os.path.basename(script_path).replace("_script.json", "")
+            mod_dir = f"build/renders/{mod_id}"
+            os.makedirs(mod_dir, exist_ok=True)
+            print(f"Procesando capítulo: {script.get('module_title', mod_id)}")
 
-            if os.path.exists(final_scene_mp4) and os.path.getsize(final_scene_mp4) > 80000:
-                continue
+            for scene in script["scenes"]:
+                s_num = scene["scene_number"]
+                mp3_path = f"{mod_dir}/scene_{s_num:03d}.mp3"
+                srt_path = f"{mod_dir}/scene_{s_num:03d}.srt"
+                final_scene_mp4 = f"{mod_dir}/scene_{s_num:03d}.mp4"
+                tech_flag = f"{mod_dir}/scene_{s_num:03d}_fitness.done"
 
-            if not (os.path.exists(mp3_path) and os.path.exists(srt_path)):
-                generate_tts_and_subs(scene["narration"], mp3_path, srt_path)
-            duration = get_audio_duration(mp3_path) + 0.35
+                v_type = scene.get("visual_type", "broll_context")
+                is_tech = (v_type == "ai_technique")
 
-            v_type = scene.get("visual_type", "broll_context")
-            source_video = None
+                # Si es escena de contexto ya hecha, la conserva; si es técnica vieja, la reemplaza por el animador biomecánico
+                if os.path.exists(final_scene_mp4) and os.path.getsize(final_scene_mp4) > 80000:
+                    if not is_tech or os.path.exists(tech_flag):
+                        continue
 
-            if v_type == "ai_technique":
-                pose_p = scene.get("pose_prompt") or scene.get("ai_image_prompt") or "martial arts self defense technique realistic photo"
-                motion_p = scene.get("motion_prompt") or pose_p
+                if not (os.path.exists(mp3_path) and os.path.exists(srt_path)):
+                    generate_tts_and_subs(scene["narration"], mp3_path, srt_path)
+                duration = get_audio_duration(mp3_path) + 0.35
 
-                st_img = generate_hd_keyframe(pose_p, img_path)
-                if st_img == "QUOTA":
-                    print("⏸️ Cupo diario de ZeroGPU alcanzado en FLUX. Guardando progreso para reanudar automáticamente...")
-                    return
-                if st_img != "OK":
-                    print(f"  [Aviso] No se pudo generar imagen clave en escena {s_num}, usando respaldo visual...")
-                    source_video = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
+                if is_tech:
+                    cfg = infer_technique_config(scene)
+                    await render_fitness_animation(page, cfg, duration, mp3_path, srt_path, final_scene_mp4)
+                    with open(tech_flag, "w") as tf:
+                        tf.write("ok")
+                    print(f"  -> Escena {s_num:02d} [TÉCNICA BIOMECÁNICA: {cfg['title']}] lista ({duration:.1f}s)")
                 else:
-                    st_vid = animate_hd_i2v(img_path, motion_p, raw_ai_mp4)
-                    if st_vid == "QUOTA":
-                        print("⏸️ Cupo diario de ZeroGPU alcanzado en I2V. Guardando progreso para reanudar automáticamente...")
-                        return
-                    if st_vid == "OK":
-                        source_video = raw_ai_mp4
-                    else:
-                        print(f"  [Aviso] Falló animación I2V en escena {s_num}, usando respaldo visual...")
-                        source_video = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
-            else:
-                source_video = fetch_pixabay_video(scene.get("pixabay_query", "martial arts"), s_num)
+                    source_video = fetch_pixabay_video(scene.get("pixabay_query", "martial arts training"), s_num)
+                    if not source_video or not os.path.exists(source_video):
+                        print(f"  [Aviso] Sin video disponible para escena {s_num}, saltando...")
+                        continue
 
-            if not source_video or not os.path.exists(source_video):
-                print(f"  [Aviso] Sin video disponible para escena {s_num}, saltando...")
-                continue
+                    vf = f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
+                    subprocess.run([
+                        "ffmpeg", "-y", "-stream_loop", "-1", "-i", source_video, "-i", mp3_path,
+                        "-t", f"{duration:.2f}", "-vf", vf,
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-b:a", "128k",
+                        final_scene_mp4
+                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"  -> Escena {s_num:02d} [CONTEXTO REAL] lista ({duration:.1f}s)")
 
-            vf = f"scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,subtitles={srt_path}:force_style='{sub_style}'"
-            subprocess.run([
-                "ffmpeg", "-y", "-stream_loop", "-1", "-i", source_video, "-i", mp3_path,
-                "-t", f"{duration:.2f}", "-vf", vf,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k", "-shortest", final_scene_mp4
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-            print(f"  -> Escena {s_num:02d} ({v_type}) lista ({duration:.1f}s)")
+        await browser.close()
 
 if __name__ == "__main__":
-    render_all()
+    asyncio.run(render_all())
