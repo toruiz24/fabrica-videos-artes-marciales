@@ -12,6 +12,11 @@ def clean_text(txt):
     txt = re.sub(r'[^\w\sáéíóúÁÉÍÓÚñÑüÜ\-\.\,\(\)\/]', '', txt)
     return txt.replace(":", " -").replace("'", "").strip()
 
+def has_audio_stream(video_path):
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type", "-of", "csv=p=0", video_path]
+    out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout.strip()
+    return "audio" in out
+
 def create_credits_clip(mod_dir, out_credits_mp4):
     credit_files = sorted(glob.glob(f"{mod_dir}/scene_*_credit.json"))
     seen = {}
@@ -42,21 +47,39 @@ def create_credits_clip(mod_dir, out_credits_mp4):
             continue
         size = 34 if idx == 0 else 22
         color = "#f59e0b" if idx == 0 else "white"
-        filters.append(
-            f"drawtext=font='DejaVu Sans':text='{line}':fontcolor={color}:fontsize={size}:x=120:y={y_pos}"
-        )
+        filters.append(f"drawtext=font='DejaVu Sans':text='{line}':fontcolor={color}:fontsize={size}:x=120:y={y_pos}")
         y_pos += 52
 
-    vf = ",".join(filters)
     subprocess.run([
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-        "-vf", vf,
+        "-vf", ",".join(filters),
         "-t", "5",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
         out_credits_mp4
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def normalize_clip(src_mp4, norm_mp4):
+    if has_audio_stream(src_mp4):
+        cmd = [
+            "ffmpeg", "-y", "-i", src_mp4,
+            "-vf", "fps=30,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p",
+            "-af", "aresample=44100:async=1,aformat=channel_layouts=stereo",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            norm_mp4
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y", "-i", src_mp4,
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-vf", "fps=30,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            "-shortest", norm_mp4
+        ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def compile_all():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -86,34 +109,17 @@ def compile_all():
         out_mp4 = os.path.join(OUTPUT_DIR, f"{slug}.mp4")
         print(f"Compilando {out_mp4} ({len(scenes)} escenas + créditos)...")
 
-        inputs = []
-        filter_parts = []
-        concat_inputs = ""
+        list_txt = os.path.join(mod_dir, "concat_list.txt")
+        with open(list_txt, "w", encoding="utf-8") as lf:
+            for idx, clip_path in enumerate(all_clips):
+                norm_path = os.path.join(mod_dir, f"norm_{idx:03d}.mp4")
+                normalize_clip(clip_path, norm_path)
+                lf.write(f"file '{os.path.abspath(norm_path)}'\n")
 
-        for idx, clip_path in enumerate(all_clips):
-            inputs.extend(["-i", clip_path])
-            filter_parts.append(
-                f"[{idx}:v]fps=30,scale=1920:1080:force_original_aspect_ratio=decrease,"
-                f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v{idx}];"
-                f"[{idx}:a]aresample=44100:async=1,aformat=channel_layouts=stereo[a{idx}];"
-            )
-            concat_inputs += f"[v{idx}][a{idx}]"
-
-        filter_complex = "".join(filter_parts) + f"{concat_inputs}concat=n={len(all_clips)}:v=1:a=1[outv][outa]"
-
-        cmd = [
-            "ffmpeg", "-y",
-            *inputs,
-            "-filter_complex", filter_complex,
-            "-map", "[outv]",
-            "-map", "[outa]",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            out_mp4
-        ]
-
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_txt,
+            "-c", "copy", "-movflags", "+faststart", out_mp4
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"  -> Listo: {out_mp4}")
 
 if __name__ == "__main__":
