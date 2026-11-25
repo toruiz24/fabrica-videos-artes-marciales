@@ -21,6 +21,8 @@ def setup_cookies():
         with open(COOKIES_FILE, "w", encoding="utf-8") as f:
             f.write(YT_COOKIES_TXT)
         return COOKIES_FILE
+    if os.path.exists(COOKIES_FILE):
+        return COOKIES_FILE
     return None
 
 def get_audio_duration(mp3_path):
@@ -121,7 +123,11 @@ def download_youtube_clip(query, duration, cookies_path, scene_seed=0):
     elif os.path.exists(cached_mp4):
         os.remove(cached_mp4)
 
-    base_cmd = ["yt-dlp", "--no-warnings", "--no-playlist", "--match-filter", "duration > 30 & duration < 900"]
+    base_cmd = [
+        "yt-dlp", "--no-warnings", "--no-playlist", "--ignore-errors",
+        "--extractor-args", "youtube:player_client=android,ios,web",
+        "--match-filter", "duration > 20 & duration < 900"
+    ]
     if cookies_path and os.path.exists(cookies_path):
         base_cmd.extend(["--cookies", cookies_path])
 
@@ -130,22 +136,25 @@ def download_youtube_clip(query, duration, cookies_path, scene_seed=0):
         res = subprocess.run(info_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=45)
         lines = [l for l in res.stdout.splitlines() if l.strip().startswith("{")]
         if not lines:
+            err_msg = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else "Sin resultados"
+            print(f"  [Aviso YT] Búsqueda vacía para '{query}': {err_msg[:80]}")
             return None, None
+
         meta_raw = json.loads(lines[0])
         vid_url = meta_raw.get("webpage_url")
         vid_dur = float(meta_raw.get("duration") or 60)
         uploader = meta_raw.get("uploader") or meta_raw.get("channel") or "YouTube Creator"
         title = meta_raw.get("title") or query
 
-        # Saltar intro típica (35s o 25% del video) y recortar exactamente la duración necesaria
-        start_sec = min(35.0, max(5.0, vid_dur * 0.25))
+        start_sec = min(30.0, max(5.0, vid_dur * 0.22))
         end_sec = min(vid_dur - 2.0, start_sec + duration + 3.0)
         if end_sec <= start_sec + 3.0:
             start_sec, end_sec = 0.0, min(vid_dur, duration + 3.0)
 
         dl_cmd = [
             "yt-dlp", "--no-warnings",
-            "-f", "bestvideo[vcodec^=avc1][height<=1080]/best[vcodec^=avc1][height<=1080]/best[height<=1080][ext=mp4]/best",
+            "--extractor-args", "youtube:player_client=android,ios,web",
+            "-f", "best[height<=1080][ext=mp4]/bestvideo[height<=1080][ext=mp4]/best[ext=mp4]/best",
             "--download-sections", f"*{start_sec:.1f}-{end_sec:.1f}",
             "--force-keyframes-at-cuts",
             "-o", cached_mp4, vid_url
@@ -153,16 +162,19 @@ def download_youtube_clip(query, duration, cookies_path, scene_seed=0):
         if cookies_path and os.path.exists(cookies_path):
             dl_cmd.extend(["--cookies", cookies_path])
 
-        subprocess.run(dl_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
+        dl_res = subprocess.run(dl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=90)
         if has_valid_video(cached_mp4):
             meta = {"uploader": uploader, "title": title, "url": vid_url}
             with open(cached_meta, "w", encoding="utf-8") as f:
                 json.dump(meta, f, ensure_ascii=False)
             return cached_mp4, meta
-        elif os.path.exists(cached_mp4):
-            os.remove(cached_mp4)
+        else:
+            err_dl = dl_res.stderr.strip().splitlines()[-1] if dl_res.stderr.strip() else "Archivo sin pista de video"
+            print(f"  [Aviso YT] Falló descarga ({err_dl[:80]})")
+            if os.path.exists(cached_mp4):
+                os.remove(cached_mp4)
     except Exception as e:
-        print(f"  [Aviso YT] No se pudo bajar '{query}': {str(e)[:70]}")
+        print(f"  [Aviso YT] Error en '{query}': {str(e)[:80]}")
     return None, None
 
 def render_all():
