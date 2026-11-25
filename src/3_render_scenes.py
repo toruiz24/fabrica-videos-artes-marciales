@@ -28,6 +28,13 @@ def get_audio_duration(mp3_path):
     out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout.strip()
     return float(out) if out else 0.0
 
+def has_valid_video(video_path):
+    if not os.path.exists(video_path) or os.path.getsize(video_path) < 50000:
+        return False
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", video_path]
+    out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True).stdout.strip()
+    return "video" in out
+
 def has_real_audio(mp3_path):
     if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) < 2000:
         return False
@@ -108,9 +115,11 @@ def download_youtube_clip(query, duration, cookies_path, scene_seed=0):
     cached_mp4 = f"{YT_CACHE}/{q_hash}.mp4"
     cached_meta = f"{YT_CACHE}/{q_hash}.json"
 
-    if os.path.exists(cached_mp4) and os.path.getsize(cached_mp4) > 80000 and os.path.exists(cached_meta):
+    if has_valid_video(cached_mp4) and os.path.exists(cached_meta):
         with open(cached_meta, "r", encoding="utf-8") as f:
             return cached_mp4, json.load(f)
+    elif os.path.exists(cached_mp4):
+        os.remove(cached_mp4)
 
     base_cmd = ["yt-dlp", "--no-warnings", "--no-playlist", "--match-filter", "duration > 30 & duration < 900"]
     if cookies_path and os.path.exists(cookies_path):
@@ -136,7 +145,7 @@ def download_youtube_clip(query, duration, cookies_path, scene_seed=0):
 
         dl_cmd = [
             "yt-dlp", "--no-warnings",
-            "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
+            "-f", "bestvideo[vcodec^=avc1][height<=1080]/best[vcodec^=avc1][height<=1080]/best[height<=1080][ext=mp4]/best",
             "--download-sections", f"*{start_sec:.1f}-{end_sec:.1f}",
             "--force-keyframes-at-cuts",
             "-o", cached_mp4, vid_url
@@ -145,11 +154,13 @@ def download_youtube_clip(query, duration, cookies_path, scene_seed=0):
             dl_cmd.extend(["--cookies", cookies_path])
 
         subprocess.run(dl_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90)
-        if os.path.exists(cached_mp4) and os.path.getsize(cached_mp4) > 80000:
+        if has_valid_video(cached_mp4):
             meta = {"uploader": uploader, "title": title, "url": vid_url}
             with open(cached_meta, "w", encoding="utf-8") as f:
                 json.dump(meta, f, ensure_ascii=False)
             return cached_mp4, meta
+        elif os.path.exists(cached_mp4):
+            os.remove(cached_mp4)
     except Exception as e:
         print(f"  [Aviso YT] No se pudo bajar '{query}': {str(e)[:70]}")
     return None, None
@@ -175,7 +186,7 @@ def render_all():
             out_yt = f"{mod_dir}/scene_{s_num:03d}_yt.mp4"
             credit_json = f"{mod_dir}/scene_{s_num:03d}_credit.json"
 
-            if os.path.exists(out_yt) and os.path.getsize(out_yt) > 80000:
+            if has_valid_video(out_yt):
                 continue
 
             if not (has_real_audio(mp3_path) and os.path.exists(srt_path)):
@@ -188,12 +199,11 @@ def render_all():
             print(f"  Buscando en YouTube: '{yt_query}'...")
             source_video, yt_meta = download_youtube_clip(yt_query, duration, cookies_path, s_num)
 
-            # Respaldo dentro de YouTube si la búsqueda muy específica no trajo resultados
             if not source_video:
                 source_video, yt_meta = download_youtube_clip("martial arts self defense training", duration, cookies_path, s_num)
 
-            if not source_video or not os.path.exists(source_video):
-                print(f"  [Aviso] Sin video disponible para escena {s_num}, saltando...")
+            if not source_video or not has_valid_video(source_video):
+                print(f"  [Aviso] Sin video válido para escena {s_num}, saltando...")
                 continue
 
             vf_parts = [
@@ -214,6 +224,7 @@ def render_all():
 
             subprocess.run([
                 "ffmpeg", "-y", "-stream_loop", "-1", "-i", source_video, "-i", mp3_path,
+                "-map", "0:v:0", "-map", "1:a:0",
                 "-t", f"{duration:.2f}", "-vf", vf,
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k",
