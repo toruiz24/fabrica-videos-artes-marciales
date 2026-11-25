@@ -6,21 +6,14 @@ import time
 import hashlib
 import subprocess
 import urllib.request
-import requests
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
-PIXABAY_KEY = os.environ.get("PIXABAY_API_KEY", "").strip()
 YT_COOKIES_TXT = os.environ.get("YT_COOKIES", "").strip()
 
-PIXABAY_VID_CACHE = "build/pixabay_videos"
 YT_CACHE = "build/yt_clips"
 COOKIES_FILE = "build/yt_cookies.txt"
 VOICE = "es-AR-TomasNeural"
-
-API_HEADERS = {"Accept": "application/json"}
-CDN_HEADERS = {"Referer": "https://" + "://pixabay.com"}
-PIXABAY_VID_BASE = "https://" + "pixabay.com" + "/api/videos/"
 
 def setup_cookies():
     if YT_COOKIES_TXT:
@@ -54,7 +47,7 @@ def generate_tts_and_subs(text, out_mp3, out_srt, max_retries=5):
                 "--write-media", out_mp3,
                 "--write-subtitles", out_srt
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if has_real_audio(mp3_path=out_mp3) and os.path.exists(out_srt):
+            if has_real_audio(out_mp3) and os.path.exists(out_srt):
                 return
         except Exception:
             pass
@@ -67,12 +60,23 @@ def clean_drawtext(txt):
 
 def get_youtube_search_query(scene):
     narration = scene.get("narration", "")
-    prompt = (
-        "Sos un experto en artes marciales y defensa personal. Dada esta narración de un documental, "
-        "devolvé ÚNICAMENTE una búsqueda corta en inglés (4 a 6 palabras) para encontrar en YouTube "
-        "una demostración técnica exacta de ese golpe, bloqueo o movimiento (ej: 'open palm strike chin self defense tutorial'). "
-        f"Sin comillas ni explicaciones.\nNarración: {narration}"
-    )
+    is_tech = (scene.get("visual_type") == "ai_technique")
+
+    if is_tech:
+        instruction = (
+            "Sos un experto en artes marciales y defensa personal. Dada esta narración, "
+            "devolvé ÚNICAMENTE una búsqueda corta en inglés (4 a 6 palabras) para encontrar en YouTube "
+            "una demostración técnica exacta de ese golpe, bloqueo o movimiento (ej: 'open palm strike chin self defense tutorial'). "
+        )
+    else:
+        instruction = (
+            "Sos un editor de documentales de artes marciales. Dada esta narración de contexto, "
+            "devolvé ÚNICAMENTE una búsqueda corta en inglés (4 a 6 palabras) para encontrar en YouTube "
+            "un video real de entrenamiento, sparring o situación de defensa personal acorde (ej: 'martial arts sparring gym training'). "
+        )
+
+    prompt = f"{instruction}Sin comillas ni explicaciones.\nNarración: {narration}"
+
     if GEMINI_KEY:
         try:
             url = f"https://googleapis.com{GEMINI_KEY}"
@@ -80,7 +84,7 @@ def get_youtube_search_query(scene):
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=20) as r:
                 res = json.loads(r.read().decode("utf-8"))
-                q = res["candidates"]["content"]["parts"]["text"].strip().strip('"')
+                q = res["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"')
                 if q:
                     return q
         except Exception:
@@ -92,15 +96,15 @@ def get_youtube_search_query(scene):
             req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "Authorization": f"Bearer {OPENROUTER_KEY}"})
             with urllib.request.urlopen(req, timeout=20) as r:
                 res = json.loads(r.read().decode("utf-8"))
-                q = res["choices"]["message"]["content"].strip().strip('"')
+                q = res["choices"][0]["message"]["content"].strip().strip('"')
                 if q:
                     return q
         except Exception:
             pass
-    return scene.get("pixabay_query", "self defense technique tutorial")
-def download_youtube_clip(query, duration, out_clip, cookies_path):
+    return "self defense martial arts technique tutorial"
+def download_youtube_clip(query, duration, cookies_path, scene_seed=0):
     os.makedirs(YT_CACHE, exist_ok=True)
-    q_hash = hashlib.md5(query.lower().encode()).hexdigest()[:10]
+    q_hash = hashlib.md5(f"{query.lower()}_{scene_seed}".encode()).hexdigest()[:10]
     cached_mp4 = f"{YT_CACHE}/{q_hash}.mp4"
     cached_meta = f"{YT_CACHE}/{q_hash}.json"
 
@@ -150,37 +154,6 @@ def download_youtube_clip(query, duration, out_clip, cookies_path):
         print(f"  [Aviso YT] No se pudo bajar '{query}': {str(e)[:70]}")
     return None, None
 
-def fetch_pixabay_video(query, scene_seed):
-    os.makedirs(PIXABAY_VID_CACHE, exist_ok=True)
-    if not PIXABAY_KEY:
-        return None
-    for search_q in [query, "martial arts training", "boxing sparring", "self defense"]:
-        q_hash = hashlib.md5(search_q.lower().encode()).hexdigest()[:10]
-        cached = sorted(glob.glob(f"{PIXABAY_VID_CACHE}/{q_hash}_*.mp4"))
-        if cached:
-            return cached[scene_seed % len(cached)]
-        try:
-            time.sleep(0.6)
-            resp = requests.get(PIXABAY_VID_BASE, params={"key": PIXABAY_KEY, "q": search_q, "per_page": 5}, headers=API_HEADERS, timeout=20)
-            if resp.status_code != 200:
-                continue
-            downloaded = []
-            for idx, hit in enumerate(resp.json().get("hits", [])[:3]):
-                vids = hit.get("videos", {})
-                info = vids.get("medium") or vids.get("large") or vids.get("small")
-                if info and info.get("url"):
-                    local_path = f"{PIXABAY_VID_CACHE}/{q_hash}_{idx}.mp4"
-                    r = requests.get(info["url"], headers=CDN_HEADERS, timeout=40)
-                    if r.status_code == 200 and len(r.content) > 100000:
-                        with open(local_path, "wb") as f:
-                            f.write(r.content)
-                        downloaded.append(local_path)
-            if downloaded:
-                return downloaded[scene_seed % len(downloaded)]
-        except Exception:
-            pass
-    return None
-
 def render_all():
     cookies_path = setup_cookies()
     script_files = sorted(glob.glob("build/scripts/*_script.json"))
@@ -211,20 +184,16 @@ def render_all():
                 generate_tts_and_subs(scene["narration"], mp3_path, srt_path)
             duration = get_audio_duration(mp3_path) + 0.35
 
-            is_tech = (scene.get("visual_type") == "ai_technique")
-            source_video = None
-            yt_meta = None
+            yt_query = get_youtube_search_query(scene)
+            print(f"  Buscando en YouTube: '{yt_query}'...")
+            source_video, yt_meta = download_youtube_clip(yt_query, duration, cookies_path, s_num)
 
-            if is_tech:
-                yt_query = get_youtube_search_query(scene)
-                print(f"  Buscando en YouTube: '{yt_query}'...")
-                source_video, yt_meta = download_youtube_clip(yt_query, duration, out_yt, cookies_path)
-
+            # Respaldo dentro de YouTube si la búsqueda muy específica no trajo resultados
             if not source_video:
-                source_video = fetch_pixabay_video(scene.get("pixabay_query", "martial arts training"), s_num)
+                source_video, yt_meta = download_youtube_clip("martial arts self defense training", duration, cookies_path, s_num)
 
             if not source_video or not os.path.exists(source_video):
-                print(f"  [Aviso] Sin video para escena {s_num}, saltando...")
+                print(f"  [Aviso] Sin video disponible para escena {s_num}, saltando...")
                 continue
 
             vf_parts = [
@@ -251,8 +220,7 @@ def render_all():
                 out_yt
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            tag = f"YOUTUBE ({yt_meta['uploader']})" if yt_meta else "CONTEXTO HD"
-            print(f"  -> Escena {s_num:02d} [{tag}] lista ({duration:.1f}s)")
+            print(f"  -> Escena {s_num:02d} [YOUTUBE: {yt_meta['uploader']}] lista ({duration:.1f}s)")
 
 if __name__ == "__main__":
     render_all()
